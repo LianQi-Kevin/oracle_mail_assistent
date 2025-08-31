@@ -4,6 +4,7 @@ import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional, List, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import openpyxl
 import requests
@@ -303,62 +304,83 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
     return parseWorkflowSearch(response.content)
 
 
+def process_row(args):
+    """
+    单线程处理一行数据。为了避免直接操作 Workbook，
+    仅返回『需要写回行的列号和值』的列表。
+    """
+    row, m = args  # m 是 MAIN_RE.match 的结果
+    matched_data = m.groupdict()
+
+    # ---- 1. 请求邮件 ----
+    mails = searchMail(
+        search_params=patternInfo(
+            unit=matched_data['unit'],
+            discipline=matched_data['discipline'],
+            drawing=matched_data['drawing'],
+        ),
+        mail_box="ALL"
+    )
+
+    if not mails:
+        return row, []  # 无数据，主线程可打印日志
+
+    newest_mail = mails[0]
+    newest_match = MAIN_RE.match(newest_mail.subject).groupdict()
+
+    _writes = [
+        (4, newest_match.get('ver', '')),  # ver
+        (5, newest_mail.SentDate.date().isoformat()),  # sentDate
+    ]
+
+    if newest_match.get('wf') and not newest_match['ver'].isdigit():
+        wf_num = newest_match['wf']
+        wf_data = searchWorkflow(wf_num)
+        _writes.append((7, wf_num))
+
+        base_col = 8
+        for wf in wf_data.workflows:
+            if wf.step_name == "最终" and wf.step_outcome != "正等待处理":
+                _writes.append((6, f"code {wf.step_outcome.split('-')[0]}"))
+            if wf.step_outcome == "正等待处理":
+                _writes.extend([
+                    (base_col, wf.assignees[0].organization_name.split(" ")[0]),
+                    (base_col + 1, wf.assignees[0].name.split(" ")[-1]),
+                    (base_col + 2, wf.step_status),
+                ])
+                base_col += 3
+
+    if newest_match.get('ver', '').isdigit():
+        _writes.append(('fill_green', None))  # 自定义标记，主线程再做 fill
+
+    return row, _writes
+
+
+# ---------------- ② main 修改 ----------------
 if __name__ == '__main__':
     requestToken()
-
     wb = openpyxl.load_workbook('test1.xlsx')
+
+    green_fill = PatternFill("solid", fgColor="92D050")
+
     for sheet in wb.worksheets:
-        # sheet = wb['国泰瑞安']
-        for row in sheet.iter_rows(min_row=2, max_col=50):
-            if row[1].value is None or row[1] is None:
-                continue
-            m = MAIN_RE.match(clean_str(row[1].value))
-            if not m:
-                print("无法匹配:", row[1])
-                continue
+        rows = [
+            (row, MAIN_RE.match(clean_str(row[1].value)))
+            for row in sheet.iter_rows(min_row=2, max_col=50)
+            if row[1].value and MAIN_RE.match(clean_str(row[1].value))
+        ]
 
-            matched_data = m.groupdict()
-            cleaned_response = searchMail(
-                search_params=patternInfo(unit=matched_data['unit'], discipline=matched_data['discipline'],
-                                          drawing=matched_data['drawing'], ), mail_box="ALL")
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {executor.submit(process_row, item): item[0] for item in rows}
 
-            print([mail.subject for mail in cleaned_response])
+            for fut in as_completed(futures):
+                row, writes = fut.result()  # 写操作放回主线程
+                for col_idx, val in writes:
+                    if col_idx == 'fill_green':
+                        for i in range(8):  # 0-7 列涂色
+                            row[i].fill = green_fill
+                    else:
+                        row[col_idx].value = val
 
-            if not cleaned_response:
-                print("未找到:", row[1].value)
-                continue
-
-            newest_mail = cleaned_response[0] if cleaned_response else None
-            newest_matched_data = MAIN_RE.match(newest_mail.subject).groupdict() if newest_mail else None
-            print(newest_matched_data)
-
-            row[4].value = newest_matched_data['ver'] if newest_matched_data else ''  # ver
-            row[5].value = newest_mail.SentDate.date().isoformat() if newest_mail else ''  # sentDate
-
-            # 查询工作流
-            if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
-                print(newest_matched_data['wf'])
-                row[7].value = newest_matched_data['wf'] if newest_matched_data else ''  # wf
-
-                workflows_data = searchWorkflow(workflow_num=newest_matched_data['wf'])
-                base_col = 8
-                for workflow in workflows_data.workflows:
-                    print(
-                        f"Workflow ID: {workflow.workflow_id}, Step Status: {workflow.step_status}, Step Name: {workflow.step_name}, "
-                        f"Step Out Come: {workflow.step_outcome}, Assignee: {workflow.assignees[0].name} "
-                        # f"Organization Name: {workflow.assignees[0].organization_name}"
-                    )
-                    if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
-                        row[6].value = f"code {workflow.step_outcome.split('-')[0]}"
-                    if workflow.step_outcome == "正等待处理":
-                        # base_col = 8 + index * 3
-                        row[base_col].value = workflow.assignees[0].organization_name.split(" ")[0]
-                        row[base_col + 1].value = workflow.assignees[0].name.split(" ")[-1]
-                        row[base_col + 2].value = workflow.step_status
-                        base_col += 3
-            elif newest_matched_data["ver"].isdigit():
-                for i in range(8):
-                    row[i].fill = openpyxl.styles.PatternFill("solid", fgColor="92D050")    # green
-
-        wb.save('test1_out.xlsx')
+    wb.save('test1_out.xlsx')
     wb.close()
