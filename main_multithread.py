@@ -359,11 +359,14 @@ def process_row(args):
 # ---------------- ② main 修改 ----------------
 if __name__ == '__main__':
     requestToken()
-    wb = openpyxl.load_workbook('test1.xlsx')
+    wb = openpyxl.load_workbook('图纸进度跟踪表.xlsx')
 
     green_fill = PatternFill("solid", fgColor="92D050")
 
     for sheet in wb.worksheets:
+        if sheet.title in ["汇总"]:
+            continue
+
         rows = [
             (row, MAIN_RE.match(clean_str(row[1].value)))
             for row in sheet.iter_rows(min_row=2, max_col=50)
@@ -382,5 +385,5 @@ if __name__ == '__main__':
                     else:
                         row[col_idx].value = val
 
-    wb.save('test1_out.xlsx')
+    wb.save('图纸进度跟踪表_out.xlsx')
     wb.close()

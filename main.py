@@ -306,15 +306,16 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
 if __name__ == '__main__':
     requestToken()
 
-    wb = openpyxl.load_workbook('test1.xlsx')
+    wb = openpyxl.load_workbook('图纸进度跟踪表.xlsx')
     for sheet in wb.worksheets:
-        # sheet = wb['国泰瑞安']
+        if sheet.title in ["汇总"]:   # 跳过汇总表
+            continue
         for row in sheet.iter_rows(min_row=2, max_col=50):
             if row[1].value is None or row[1] is None:
                 continue
             m = MAIN_RE.match(clean_str(row[1].value))
             if not m:
-                print("无法匹配:", row[1])
+                print("无法匹配:", row[1].value)
                 continue
 
             matched_data = m.groupdict()
@@ -360,5 +361,5 @@ if __name__ == '__main__':
                 for i in range(8):
                     row[i].fill = openpyxl.styles.PatternFill("solid", fgColor="92D050")    # green
 
-        wb.save('test1_out.xlsx')
+        wb.save('图纸进度跟踪表_out.xlsx')
     wb.close()
