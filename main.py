@@ -7,7 +7,7 @@ from typing import Literal, Optional, List, Tuple
 
 import openpyxl
 import requests
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Border, Side
 
 from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow
@@ -310,8 +310,12 @@ if __name__ == '__main__':
     for sheet in wb.worksheets:
         if sheet.title in ["汇总"]:   # 跳过汇总表
             continue
+
+        # 记录最大使用列数量
+        max_col_used = 0
+
         for row in sheet.iter_rows(min_row=2, max_col=50):
-            if row[1].value is None or row[1] is None:
+            if row[1].value is None:
                 continue
             m = MAIN_RE.match(clean_str(row[1].value))
             if not m:
@@ -333,16 +337,19 @@ if __name__ == '__main__':
             newest_matched_data = MAIN_RE.match(newest_mail.subject).groupdict() if newest_mail else None
             print(newest_matched_data)
 
+            # 版本号及上传时间
             row[4].value = newest_matched_data['ver'] if newest_matched_data else ''  # ver
             row[5].value = newest_mail.SentDate.date().isoformat() if newest_mail else ''  # sentDate
 
+            # 审核人起始列号
+            base_col = 8
+
             # 查询工作流
             if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
-                print(newest_matched_data['wf'])
+                # 工作流编号
                 row[7].value = newest_matched_data['wf'] if newest_matched_data else ''  # wf
 
                 workflows_data = searchWorkflow(workflow_num=newest_matched_data['wf'])
-                base_col = 8
                 for workflow in workflows_data.workflows:
                     print(
                         f"Workflow ID: {workflow.workflow_id}, Step Status: {workflow.step_status}, Step Name: {workflow.step_name}, "
@@ -350,16 +357,33 @@ if __name__ == '__main__':
                         # f"Organization Name: {workflow.assignees[0].organization_name}"
                     )
                     if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
+                        # 审核完成，写入最终审核状态
                         row[6].value = f"code {workflow.step_outcome.split('-')[0]}"
                     if workflow.step_outcome == "正等待处理":
-                        # base_col = 8 + index * 3
+                        # 正在处理的工作流，写入处理人和状态
                         row[base_col].value = workflow.assignees[0].organization_name.split(" ")[0]
                         row[base_col + 1].value = workflow.assignees[0].name.split(" ")[-1]
                         row[base_col + 2].value = workflow.step_status
                         base_col += 3
             elif newest_matched_data["ver"].isdigit():
-                for i in range(8):
-                    row[i].fill = openpyxl.styles.PatternFill("solid", fgColor="92D050")    # green
+                # 正式版（数字版）添加绿色填充，清空工作流相关单元格
+                for cell in row[:8]:
+                    cell.fill = PatternFill("solid", fgColor="92D050")  # green
+                for cell in row[6:]:
+                    cell.value = None
+            if base_col > max_col_used:
+                # 更新最大使用行数
+                max_col_used = base_col
+
+        # 计算使用过的单元格最大数值，添加边框
+        thin_side = Side(border_style="thin", color="000000")
+        for row in sheet.iter_rows(min_row=1, max_col=50):
+            for cell in row[:max_col_used + 1]:
+                cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+            for cell in row[max_col_used + 1:]:
+                cell.border = Border()
+                cell.value = None
+                cell.fill = PatternFill()
 
         wb.save('图纸进度跟踪表_out.xlsx')
     wb.close()
