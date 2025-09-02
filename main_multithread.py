@@ -352,6 +352,8 @@ def process_row(args):
 
     if newest_match.get('ver', '').isdigit():
         _writes.append(('fill_green', None))  # 自定义标记，主线程再做 fill
+        for _i in range(6, 21):
+            _writes.append((_i, ''))
 
     return row, _writes
 

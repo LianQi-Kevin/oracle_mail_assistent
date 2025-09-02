@@ -7,6 +7,7 @@ from typing import Literal, Optional, List, Tuple
 
 import openpyxl
 import requests
+from openpyxl.cell import MergedCell
 from openpyxl.styles import PatternFill, Border, Side
 
 from config import config
@@ -378,12 +379,14 @@ if __name__ == '__main__':
         # 计算使用过的单元格最大数值，添加边框
         thin_side = Side(border_style="thin", color="000000")
         for row in sheet.iter_rows(min_row=1, max_col=50):
-            for cell in row[:max_col_used + 1]:
-                cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
-            for cell in row[max_col_used + 1:]:
-                cell.border = Border()
-                cell.value = None
-                cell.fill = PatternFill()
+            for cell in row[:max_col_used]:
+                if type(cell) is not MergedCell:
+                    cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+            for cell in row[max_col_used:]:
+                if type(cell) is not MergedCell:
+                    cell.border = Border()
+                    cell.value = None
+                    cell.fill = PatternFill()
 
         wb.save('图纸进度跟踪表_out.xlsx')
     wb.close()
