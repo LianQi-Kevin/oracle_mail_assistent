@@ -375,7 +375,7 @@ if __name__ == '__main__':
                     )
                     if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
                         # 审核完成，写入最终审核状态
-                        row[6].value = f"code {workflow.step_outcome.split('-')[0]}"
+                        row[6].value = f"code {workflow.step_outcome.split('-')[0]}" if workflow.step_status != "已终止" else "工作流已终止"
                     if workflow.step_outcome == "正等待处理":
                         # 正在处理的工作流，写入处理人和状态
                         row[base_col].value = workflow.assignees[0].organization_name.split(" ")[0]
