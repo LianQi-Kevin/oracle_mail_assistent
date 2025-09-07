@@ -7,8 +7,8 @@ from typing import Literal, Optional, List, Tuple
 
 import openpyxl
 import requests
-from openpyxl.cell import MergedCell
-from openpyxl.styles import PatternFill, Border, Side
+from openpyxl.cell import MergedCell, Cell
+from openpyxl.styles import PatternFill, Border, Side, Font
 
 from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow
@@ -304,6 +304,17 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
     return parseWorkflowSearch(response.content)
 
 
+def cellWriter(cell: Cell, value: Optional[str]):
+    old_value = cell.value
+    old_color = cell.font.name
+
+    if old_value != value and old_value is not None:
+        cell.value = value
+        cell.font = Font(
+
+        )
+
+
 if __name__ == '__main__':
     requestToken()
 
@@ -342,6 +353,11 @@ if __name__ == '__main__':
             row[4].value = newest_matched_data['ver'] if newest_matched_data else ''  # ver
             row[5].value = newest_mail.SentDate.date().isoformat() if newest_mail else ''  # sentDate
 
+            # 清理审批结果、工作流编号、审批进度信息
+            for cell in row[6:]:
+                cell.value = None
+                cell.fill = PatternFill()
+
             # 审核人起始列号
             base_col = 8
 
@@ -367,11 +383,9 @@ if __name__ == '__main__':
                         row[base_col + 2].value = workflow.step_status
                         base_col += 3
             elif newest_matched_data["ver"].isdigit():
-                # 正式版（数字版）添加绿色填充，清空工作流相关单元格
-                for cell in row[:8]:
-                    cell.fill = PatternFill("solid", fgColor="92D050")  # green
-                for cell in row[6:]:
-                    cell.value = None
+                # 正式版（数字版）添加绿色填充
+                for _cell in row[:8]:
+                    _cell.fill = PatternFill("solid", fgColor="92D050")  # green
             if base_col > max_col_used:
                 # 更新最大使用行数
                 max_col_used = base_col
@@ -379,14 +393,14 @@ if __name__ == '__main__':
         # 计算使用过的单元格最大数值，添加边框
         thin_side = Side(border_style="thin", color="000000")
         for row in sheet.iter_rows(min_row=1, max_col=50):
-            for cell in row[:max_col_used]:
-                if type(cell) is not MergedCell:
-                    cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
-            for cell in row[max_col_used:]:
-                if type(cell) is not MergedCell:
-                    cell.border = Border()
-                    cell.value = None
-                    cell.fill = PatternFill()
+            for _cell in row[:max_col_used]:
+                if type(_cell) is not MergedCell:
+                    _cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+            for _cell in row[max_col_used:]:
+                if type(_cell) is not MergedCell:
+                    _cell.border = Border()
+                    _cell.value = None
+                    _cell.fill = PatternFill()
 
         wb.save('图纸进度跟踪表_out.xlsx')
     wb.close()
