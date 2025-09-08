@@ -8,7 +8,7 @@ if __name__ == '__main__':
 
     requestToken()
 
-    for row in sheet.iter_rows(min_row=2, max_row=250, max_col=50):
+    for row in sheet.iter_rows(min_row=2, max_row=74, max_col=50):
         # 读图纸编号
         print(row[0].value)
         matched = MAIN_RE.match(clean_str(row[0].value)).groupdict()
@@ -24,7 +24,7 @@ if __name__ == '__main__':
         ), "ALL")
 
         if mailResponse:
-            matched_new = MAIN_RE.match(mailResponse[0].subject).groupdict()
+            matched_new = MAIN_RE.match(clean_str(mailResponse[0].subject)).groupdict()
             print(matched_new)
             row[2].value = rf"SLDS-BCEG-{matched_new['unit']}-SDS-{matched_new['discipline']}-{matched_new['drawing']}"    # 图纸编号
             row[3].value = matched_new['title']    # 图纸名称
@@ -33,7 +33,7 @@ if __name__ == '__main__':
             row[6].value = matched_new.get("wf", "")  # 工作流编号
 
             # wf
-            base_col = 7
+            base_col = 8
             if matched_new["wf"]:
                 wfResponse = searchWorkflow(matched_new["wf"])
                 for workflow in wfResponse.workflows:
