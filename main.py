@@ -1,5 +1,7 @@
 import base64
+import os.path
 import re
+import shutil
 import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -14,6 +16,9 @@ from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow
 
 ACCESS_TOKEN_LOCK = threading.Lock()
+
+XLSX_PATH = r"./图纸进度跟踪表.xlsx"
+EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
 
 MAIN_RE = re.compile(
     r'^[ \t]*'                                        # ◇ 行首半角空白
@@ -316,9 +321,18 @@ def cellWriter(cell: Cell, value: Optional[str]):
 
 
 if __name__ == '__main__':
+    # check input/export path
+    if not os.path.isfile(XLSX_PATH):
+        raise FileNotFoundError(f"Input file '{XLSX_PATH}' not found.")
+    if os.path.isfile(EXPORT_PATH):
+        print(f"Warning: Output file '{EXPORT_PATH}' already exists and will be overwritten.")
+        shutil.rmtree(EXPORT_PATH)
+
+    # ensure access token is valid
     requestToken()
 
-    wb = openpyxl.load_workbook('图纸进度跟踪表.xlsx')
+    # open and process xlsx
+    wb = openpyxl.load_workbook(XLSX_PATH)
     for sheet in wb.worksheets:
         if sheet.title in ["汇总"]:   # 跳过汇总表
             continue
@@ -402,5 +416,5 @@ if __name__ == '__main__':
                     _cell.value = None
                     _cell.fill = PatternFill()
 
-        wb.save('图纸进度跟踪表_out.xlsx')
+        wb.save(EXPORT_PATH)
     wb.close()

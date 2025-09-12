@@ -1,9 +1,11 @@
+"""读取图纸清单，查询邮件和工作流，写入结果"""
+
 import openpyxl
 from main import MAIN_RE, searchMail, requestToken, searchWorkflow, clean_str
 from dataclass import patternInfo
 
 if __name__ == '__main__':
-    wb = openpyxl.load_workbook('筑安机电-图纸清单.xlsx')
+    wb = openpyxl.load_workbook('图纸清单.xlsx')
     sheet = wb.active
 
     requestToken()
