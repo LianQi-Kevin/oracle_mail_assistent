@@ -21,7 +21,8 @@ ACCESS_TOKEN_LOCK = threading.Lock()
 CELL_WRITE_LOCK = threading.Lock()
 
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
-EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
+# EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
+EXPORT_PATH = XLSX_PATH
 
 REQUEST_DATA: dict[str, searchResult] = dict()
 MAX_COL_USED = 0
@@ -440,7 +441,7 @@ if __name__ == '__main__':
     # check input/export path
     if not os.path.isfile(XLSX_PATH):
         raise FileNotFoundError(f"Input file '{XLSX_PATH}' not found.")
-    if os.path.isfile(EXPORT_PATH):
+    if os.path.isfile(EXPORT_PATH) and not EXPORT_PATH == XLSX_PATH:
         print(f"Warning: Output file '{EXPORT_PATH}' already exists and will be overwritten.")
         os.remove(EXPORT_PATH)
 
