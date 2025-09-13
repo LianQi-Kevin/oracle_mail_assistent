@@ -62,3 +62,11 @@ class WorkflowSearchResult:
     total_results: int
     total_results_on_page: int
     workflows: list[Workflow]
+
+
+@dataclass
+class searchResult:
+    sheet_name: str
+    unfinished: int = field(default=0)
+    total: int = field(default=0)
+    results: list[patternInfo] = field(default_factory=list)

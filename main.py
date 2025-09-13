@@ -1,7 +1,6 @@
 import base64
 import os.path
 import re
-import shutil
 import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -9,16 +8,20 @@ from typing import Literal, Optional, List, Tuple
 
 import openpyxl
 import requests
-from openpyxl.cell import MergedCell, Cell
-from openpyxl.styles import PatternFill, Border, Side, Font
+from openpyxl.cell import MergedCell
+# from openpyxl.cell import Cell
+from openpyxl.styles import PatternFill, Border, Side
+# from openpyxl.styles import Font
 
 from config import config
-from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow
+from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow, searchResult
 
 ACCESS_TOKEN_LOCK = threading.Lock()
 
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
 EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
+
+REQUEST_DATA: dict[str, searchResult] = dict()
 
 MAIN_RE = re.compile(
     r'^[ \t]*'                                        # ◇ 行首半角空白
@@ -309,15 +312,15 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
     return parseWorkflowSearch(response.content)
 
 
-def cellWriter(cell: Cell, value: Optional[str]):
-    old_value = cell.value
-    old_color = cell.font.name
-
-    if old_value != value and old_value is not None:
-        cell.value = value
-        cell.font = Font(
-
-        )
+# def cellWriter(cell: Cell, value: Optional[str]):
+#     old_value = cell.value
+#     old_color = cell.font.name
+#
+#     if old_value != value and old_value is not None:
+#         cell.value = value
+#         cell.font = Font(
+#
+#         )
 
 
 if __name__ == '__main__':
@@ -326,7 +329,7 @@ if __name__ == '__main__':
         raise FileNotFoundError(f"Input file '{XLSX_PATH}' not found.")
     if os.path.isfile(EXPORT_PATH):
         print(f"Warning: Output file '{EXPORT_PATH}' already exists and will be overwritten.")
-        shutil.rmtree(EXPORT_PATH)
+        os.remove(EXPORT_PATH)
 
     # ensure access token is valid
     requestToken()
@@ -337,84 +340,124 @@ if __name__ == '__main__':
         if sheet.title in ["汇总"]:   # 跳过汇总表
             continue
 
+        # 初始化REQUEST_DATA
+        REQUEST_DATA[sheet.title] = searchResult(sheet_name=sheet.title)
+
         # 记录最大使用列数量
         max_col_used = 0
 
+        # 遍历行，跳过表头
         for row in sheet.iter_rows(min_row=2, max_col=50):
-            if row[1].value is None:
+            try:
+                if row[1].value is None:
+                    continue
+                m = MAIN_RE.match(clean_str(row[1].value))
+                if not m:
+                    print("无法匹配:", row[1].value)
+                    continue
+
+                matched_data = m.groupdict()
+                cleaned_response = searchMail(
+                    search_params=patternInfo(unit=matched_data['unit'], discipline=matched_data['discipline'],
+                                              drawing=matched_data['drawing'], ), mail_box="ALL")
+
+                print([mail.subject for mail in cleaned_response])
+
+                if not cleaned_response:
+                    print("未找到:", row[1].value)
+                    continue
+
+                newest_mail = cleaned_response[0] if cleaned_response else None
+                newest_matched_data = MAIN_RE.match(newest_mail.subject).groupdict() if newest_mail else None
+                print(newest_matched_data)
+
+                # 版本号及上传时间
+                row[4].value = newest_matched_data['ver'] if newest_matched_data else ''  # ver
+                row[5].value = newest_mail.SentDate.date().isoformat() if newest_mail else ''  # sentDate
+
+                # 清理审批结果、工作流编号、审批进度信息
+                for cell in row[6:]:
+                    cell.value = None
+                    cell.fill = PatternFill()
+
+                # 审核人起始列号
+                base_col = 8
+
+                # 查询工作流
+                if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
+                    # 工作流编号
+                    row[7].value = newest_matched_data['wf'] if newest_matched_data else ''  # wf
+
+                    workflows_data = searchWorkflow(workflow_num=newest_matched_data['wf'])
+                    for workflow in workflows_data.workflows:
+                        print(
+                            f"Workflow ID: {workflow.workflow_id}, Step Status: {workflow.step_status}, Step Name: {workflow.step_name}, "
+                            f"Step Out Come: {workflow.step_outcome}, Assignee: {workflow.assignees[0].name} "
+                            # f"Organization Name: {workflow.assignees[0].organization_name}"
+                        )
+                        if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
+                            # 审核完成，写入最终审核状态
+                            row[6].value = f"code {workflow.step_outcome.split('-')[0]}" if workflow.step_status != "已终止" else "工作流已终止"
+                        if workflow.step_outcome == "正等待处理":
+                            # 正在处理的工作流，写入处理人和状态
+                            row[base_col].value = workflow.assignees[0].organization_name.split(" ")[0]
+                            row[base_col + 1].value = workflow.assignees[0].name.split(" ")[-1]
+                            row[base_col + 2].value = workflow.step_status
+                            base_col += 3
+
+                    # 非数字版清理颜色填充
+                    for _cell in row[:8]:
+                        _cell.fill = PatternFill()  # no fill
+
+                elif newest_matched_data["ver"].isdigit():
+                    # 正式版（数字版）添加绿色填充
+                    for _cell in row[:8]:
+                        _cell.fill = PatternFill("solid", fgColor="92D050")  # green
+                if base_col > max_col_used:
+                    # 更新最大使用行数
+                    max_col_used = base_col
+
+                # 完成请求，写入 REQUEST_DATA
+                response_data = {
+                    "unit": matched_data['unit'],
+                    "discipline": matched_data['discipline'],
+                    "drawing": matched_data['drawing'],
+                    "wf": newest_matched_data['wf'] if newest_matched_data else None,
+                    "ver": newest_matched_data['ver'] if newest_matched_data and newest_matched_data['ver'] else "*",
+                    "title": newest_matched_data['title'] if newest_matched_data and newest_matched_data['title'] else None,
+                }
+                REQUEST_DATA[sheet.title].results.append(patternInfo(**response_data))
+                REQUEST_DATA[sheet.title].total += 1
+                REQUEST_DATA[sheet.title].unfinished += 1 if newest_matched_data and not newest_matched_data['ver'].isdigit() else 0
+
+            except Exception as e:
+                print("处理行时出错:", e)
                 continue
-            m = MAIN_RE.match(clean_str(row[1].value))
-            if not m:
-                print("无法匹配:", row[1].value)
-                continue
 
-            matched_data = m.groupdict()
-            cleaned_response = searchMail(
-                search_params=patternInfo(unit=matched_data['unit'], discipline=matched_data['discipline'],
-                                          drawing=matched_data['drawing'], ), mail_box="ALL")
-
-            print([mail.subject for mail in cleaned_response])
-
-            if not cleaned_response:
-                print("未找到:", row[1].value)
-                continue
-
-            newest_mail = cleaned_response[0] if cleaned_response else None
-            newest_matched_data = MAIN_RE.match(newest_mail.subject).groupdict() if newest_mail else None
-            print(newest_matched_data)
-
-            # 版本号及上传时间
-            row[4].value = newest_matched_data['ver'] if newest_matched_data else ''  # ver
-            row[5].value = newest_mail.SentDate.date().isoformat() if newest_mail else ''  # sentDate
-
-            # 清理审批结果、工作流编号、审批进度信息
-            for cell in row[6:]:
-                cell.value = None
-                cell.fill = PatternFill()
-
-            # 审核人起始列号
-            base_col = 8
-
-            # 查询工作流
-            if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
-                # 工作流编号
-                row[7].value = newest_matched_data['wf'] if newest_matched_data else ''  # wf
-
-                workflows_data = searchWorkflow(workflow_num=newest_matched_data['wf'])
-                for workflow in workflows_data.workflows:
-                    print(
-                        f"Workflow ID: {workflow.workflow_id}, Step Status: {workflow.step_status}, Step Name: {workflow.step_name}, "
-                        f"Step Out Come: {workflow.step_outcome}, Assignee: {workflow.assignees[0].name} "
-                        # f"Organization Name: {workflow.assignees[0].organization_name}"
-                    )
-                    if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
-                        # 审核完成，写入最终审核状态
-                        row[6].value = f"code {workflow.step_outcome.split('-')[0]}" if workflow.step_status != "已终止" else "工作流已终止"
-                    if workflow.step_outcome == "正等待处理":
-                        # 正在处理的工作流，写入处理人和状态
-                        row[base_col].value = workflow.assignees[0].organization_name.split(" ")[0]
-                        row[base_col + 1].value = workflow.assignees[0].name.split(" ")[-1]
-                        row[base_col + 2].value = workflow.step_status
-                        base_col += 3
-            elif newest_matched_data["ver"].isdigit():
-                # 正式版（数字版）添加绿色填充
-                for _cell in row[:8]:
-                    _cell.fill = PatternFill("solid", fgColor="92D050")  # green
-            if base_col > max_col_used:
-                # 更新最大使用行数
-                max_col_used = base_col
-
-        # 计算使用过的单元格最大数值，添加边框
-        thin_side = Side(border_style="thin", color="000000")
-        for row in sheet.iter_rows(min_row=1, max_col=50):
-            for _cell in row[:max_col_used]:
-                if type(_cell) is not MergedCell:
-                    _cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
-            for _cell in row[max_col_used:]:
-                if type(_cell) is not MergedCell:
-                    _cell.border = Border()
-                    _cell.value = None
-                    _cell.fill = PatternFill()
-
+            # 计算使用过的单元格最大数值，添加边框
+            thin_side = Side(border_style="thin", color="000000")
+            for _row in sheet.iter_rows(min_row=1, max_col=50):
+                for _cell in _row[:max_col_used]:
+                    if type(_cell) is not MergedCell:
+                        _cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+                for _cell in _row[max_col_used:]:
+                    if type(_cell) is not MergedCell:
+                        _cell.border = Border()
+                        _cell.value = None
+                        _cell.fill = PatternFill()
         wb.save(EXPORT_PATH)
+        print(rf"Sheet '{sheet.title}' processed, total: {REQUEST_DATA[sheet.title].total}, unfinished: {REQUEST_DATA[sheet.title].unfinished}.")
+
+    # 读取各子表审核进度，写入汇总sheet
+    summary_sheet = wb["汇总"]
+    for row in summary_sheet.iter_rows(min_row=2, max_col=6):
+        if row[1].value is None:
+            continue
+        sheet_name = clean_str(row[1].value)
+        if sheet_name not in REQUEST_DATA:
+            print(f"Warning: Sheet '{sheet_name}' not found in processed data.")
+            continue
+        row[2].value = REQUEST_DATA[sheet_name].total
+        row[4].value = REQUEST_DATA[sheet_name].unfinished
+    wb.save(EXPORT_PATH)
     wb.close()
