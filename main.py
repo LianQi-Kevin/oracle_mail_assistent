@@ -5,10 +5,11 @@ import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional, List, Tuple
+from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 
 import openpyxl
 import requests
-from openpyxl.cell import MergedCell
+from openpyxl.cell import MergedCell, Cell
 # from openpyxl.cell import Cell
 from openpyxl.styles import PatternFill, Border, Side
 # from openpyxl.styles import Font
@@ -17,11 +18,13 @@ from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow, searchResult
 
 ACCESS_TOKEN_LOCK = threading.Lock()
+CELL_WRITE_LOCK = threading.Lock()
 
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
 EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
 
 REQUEST_DATA: dict[str, searchResult] = dict()
+MAX_COL_USED = 0
 
 MAIN_RE = re.compile(
     r'^[ \t]*'                                        # ◇ 行首半角空白
@@ -48,7 +51,14 @@ def clean_str(s: str) -> str:
 
 def sortMailsByVer(mails: list[responseMailInfo]) -> list[responseMailInfo]:
     """
-    Sort the mails by version
+    Sort the mails by version.
+
+    新优先级（同数字情况下）：
+        1) 数字+字母   例：12A
+        2) 纯数字       例：12
+        3) 数字+‘+字母’ 例：12+A
+        4) 纯字母       例：A
+        5) 异常 / 无版本
     """
 
     def _ver_key(ver: str) -> tuple[int, int, int]:
@@ -56,18 +66,26 @@ def sortMailsByVer(mails: list[responseMailInfo]) -> list[responseMailInfo]:
         if not _m:
             return 0, 4, 0  # 异常值，永远最后
 
-        # ── 单字母 ──
-        if _m.group('pure_letter'):  # L3
+        # ── 分类后再组合排序键 ──
+        # 第一位：数字降序（取负）
+        # 第二位：档位码（越小优先）
+        # 第三位：字母逆序（Z→A），无字母时置 0
+        num_rank = -int(_m.group('num')) if _m.group('num') else 0
+
+        if _m.group('letter'):                # 数字+字母 —— 档位 0（最高）
+            return num_rank, 0, -ord(_m.group('letter'))
+        if _m.group('num') and not any((_m.group('plus_letter'),
+                                        _m.group('letter'),
+                                        _m.group('pure_letter'))):  # 纯数字 —— 档位 1
+            return num_rank, 1, 0
+        if _m.group('plus_letter'):           # 数字+‘+字母’ —— 档位 2
+            return num_rank, 2, -ord(_m.group('plus_letter'))
+        if _m.group('pure_letter'):           # 纯字母 —— 档位 3
             return 0, 3, -ord(_m.group('pure_letter'))
 
-        num_rank = -int(_m.group('num'))  # 数字降序
-        if _m.group('plus_letter'):  # L0
-            return num_rank, 0, -ord(_m.group('plus_letter'))
-        if _m.group('letter'):  # L1
-            return num_rank, 1, -ord(_m.group('letter'))
-        return num_rank, 2, 0  # L2 纯数字
+        return 0, 4, 0        # 理论兜底，不会触发
 
-    def _mail_ver_key(mail):
+    def _mail_ver_key(mail: responseMailInfo):
         _m = MAIN_RE.match(mail.subject)
         ver = _m.group('ver') if (_m and _m.group('ver')) else ''
         return _ver_key(ver)
@@ -323,6 +341,101 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
 #         )
 
 
+def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
+    cleaned_response = searchMail(search_params=pattern_data, mail_box="ALL")
+
+    print([mail.subject for mail in cleaned_response])
+
+    if not cleaned_response:
+        print("未找到:", row[1].value)
+        return None
+
+    # 从邮件中提取最新版本信息
+    newest_mail = cleaned_response[0] if cleaned_response else None
+    newest_matched_data = MAIN_RE.match(newest_mail.subject).groupdict() if newest_mail else None
+    print(newest_matched_data)
+
+    # 写入数据缓存
+    write_data: dict[str, Optional[str]] = {}
+    workflow_data: List[dict] = []
+
+    # 版本号及上传时间
+    write_data['ver'] = newest_matched_data['ver'] if newest_matched_data else ''
+    write_data['sentDate'] = newest_mail.SentDate.date().isoformat() if newest_mail else ''
+
+    # 查询工作流
+    if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
+        # 工作流编号
+        write_data['wf'] = newest_matched_data['wf'] if newest_matched_data else ''
+
+        workflows_data = searchWorkflow(workflow_num=newest_matched_data['wf'])
+        for workflow in workflows_data.workflows:
+            # print(
+            #     f"Workflow ID: {workflow.workflow_id}, Step Status: {workflow.step_status}, Step Name: {workflow.step_name}, "
+            #     f"Step Out Come: {workflow.step_outcome}, Assignee: {workflow.assignees[0].name} "
+            #     # f"Organization Name: {workflow.assignees[0].organization_name}"
+            # )
+            if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
+                # 审核完成，写入最终审核状态
+                write_data['final_status'] = f"code {workflow.step_outcome.split('-')[0]}" if workflow.step_status != "已终止" else "工作流已终止"
+            if workflow.step_outcome == "正等待处理":
+                # 正在处理的工作流，写入处理人和状态
+                workflow_data.append({
+                    "org": workflow.assignees[0].organization_name.split(" ")[0],
+                    "name": workflow.assignees[0].name.split(" ")[-1],
+                    "status": workflow.step_status
+                })
+
+    # 完成请求，写入 REQUEST_DATA
+    response_data = {
+        "unit": matched_data['unit'],
+        "discipline": matched_data['discipline'],
+        "drawing": matched_data['drawing'],
+        "wf": newest_matched_data['wf'] if newest_matched_data else None,
+        "ver": newest_matched_data['ver'] if newest_matched_data and newest_matched_data['ver'] else "*",
+        "title": newest_matched_data['title'] if newest_matched_data and newest_matched_data['title'] else None,
+    }
+
+    with CELL_WRITE_LOCK:
+        # 引入全局变量
+        global MAX_COL_USED, REQUEST_DATA
+
+        # 清理审批结果、工作流编号、审批进度信息
+        for a in row[6:]:
+            a.value = None
+
+        # 写入单元格
+        row[4].value = write_data.get('ver', '')
+        row[5].value = write_data.get('sentDate', '')
+        row[6].value = write_data.get('final_status', '')
+        row[7].value = write_data.get('wf', '')
+
+        # 写入工作流数据
+        base_col = 8    # 审核人起始列号
+
+        for wf in workflow_data:
+            row[base_col].value = wf['org']
+            row[base_col + 1].value = wf['name']
+            row[base_col + 2].value = wf['status']
+            base_col += 3
+
+        # 写入样式
+        for b in row[:8]:
+            b.fill = PatternFill("solid", fgColor="92D050"
+                                 ) if write_data.get('ver').isdigit() else PatternFill()  # green or no fill
+
+        # 更新表MAX_COL_USED
+        if base_col > MAX_COL_USED:
+            MAX_COL_USED = base_col
+
+        # 写入全局变量
+        REQUEST_DATA[sheet.title].results.append(patternInfo(**response_data))
+        REQUEST_DATA[sheet.title].total += 1
+        REQUEST_DATA[sheet.title].unfinished += 1 if newest_matched_data and not newest_matched_data['ver'].isdigit() else 0
+
+    return None
+
+
 if __name__ == '__main__':
     # check input/export path
     if not os.path.isfile(XLSX_PATH):
@@ -337,115 +450,47 @@ if __name__ == '__main__':
     # open and process xlsx
     wb = openpyxl.load_workbook(XLSX_PATH)
     for sheet in wb.worksheets:
-        if sheet.title in ["汇总"]:   # 跳过汇总表
+        if sheet.title in ["汇总"]:  # 跳过汇总表
             continue
 
         # 初始化REQUEST_DATA
         REQUEST_DATA[sheet.title] = searchResult(sheet_name=sheet.title)
 
-        # 记录最大使用列数量
-        max_col_used = 0
+        # 构造线程池
+        pool = ThreadPoolExecutor(max_workers=50)
+        all_tasks = []
 
         # 遍历行，跳过表头
         for row in sheet.iter_rows(min_row=2, max_col=50):
-            try:
-                if row[1].value is None:
-                    continue
-                m = MAIN_RE.match(clean_str(row[1].value))
-                if not m:
-                    print("无法匹配:", row[1].value)
-                    continue
-
-                matched_data = m.groupdict()
-                cleaned_response = searchMail(
-                    search_params=patternInfo(unit=matched_data['unit'], discipline=matched_data['discipline'],
-                                              drawing=matched_data['drawing'], ), mail_box="ALL")
-
-                print([mail.subject for mail in cleaned_response])
-
-                if not cleaned_response:
-                    print("未找到:", row[1].value)
-                    continue
-
-                newest_mail = cleaned_response[0] if cleaned_response else None
-                newest_matched_data = MAIN_RE.match(newest_mail.subject).groupdict() if newest_mail else None
-                print(newest_matched_data)
-
-                # 版本号及上传时间
-                row[4].value = newest_matched_data['ver'] if newest_matched_data else ''  # ver
-                row[5].value = newest_mail.SentDate.date().isoformat() if newest_mail else ''  # sentDate
-
-                # 清理审批结果、工作流编号、审批进度信息
-                for cell in row[6:]:
-                    cell.value = None
-                    cell.fill = PatternFill()
-
-                # 审核人起始列号
-                base_col = 8
-
-                # 查询工作流
-                if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
-                    # 工作流编号
-                    row[7].value = newest_matched_data['wf'] if newest_matched_data else ''  # wf
-
-                    workflows_data = searchWorkflow(workflow_num=newest_matched_data['wf'])
-                    for workflow in workflows_data.workflows:
-                        print(
-                            f"Workflow ID: {workflow.workflow_id}, Step Status: {workflow.step_status}, Step Name: {workflow.step_name}, "
-                            f"Step Out Come: {workflow.step_outcome}, Assignee: {workflow.assignees[0].name} "
-                            # f"Organization Name: {workflow.assignees[0].organization_name}"
-                        )
-                        if workflow.step_name == "最终" and workflow.step_outcome != "正等待处理":
-                            # 审核完成，写入最终审核状态
-                            row[6].value = f"code {workflow.step_outcome.split('-')[0]}" if workflow.step_status != "已终止" else "工作流已终止"
-                        if workflow.step_outcome == "正等待处理":
-                            # 正在处理的工作流，写入处理人和状态
-                            row[base_col].value = workflow.assignees[0].organization_name.split(" ")[0]
-                            row[base_col + 1].value = workflow.assignees[0].name.split(" ")[-1]
-                            row[base_col + 2].value = workflow.step_status
-                            base_col += 3
-
-                    # 非数字版清理颜色填充
-                    for _cell in row[:8]:
-                        _cell.fill = PatternFill()  # no fill
-
-                elif newest_matched_data["ver"].isdigit():
-                    # 正式版（数字版）添加绿色填充
-                    for _cell in row[:8]:
-                        _cell.fill = PatternFill("solid", fgColor="92D050")  # green
-                if base_col > max_col_used:
-                    # 更新最大使用行数
-                    max_col_used = base_col
-
-                # 完成请求，写入 REQUEST_DATA
-                response_data = {
-                    "unit": matched_data['unit'],
-                    "discipline": matched_data['discipline'],
-                    "drawing": matched_data['drawing'],
-                    "wf": newest_matched_data['wf'] if newest_matched_data else None,
-                    "ver": newest_matched_data['ver'] if newest_matched_data and newest_matched_data['ver'] else "*",
-                    "title": newest_matched_data['title'] if newest_matched_data and newest_matched_data['title'] else None,
-                }
-                REQUEST_DATA[sheet.title].results.append(patternInfo(**response_data))
-                REQUEST_DATA[sheet.title].total += 1
-                REQUEST_DATA[sheet.title].unfinished += 1 if newest_matched_data and not newest_matched_data['ver'].isdigit() else 0
-
-            except Exception as e:
-                print("处理行时出错:", e)
+            if row[1].value is None:
+                continue
+            m = MAIN_RE.match(clean_str(row[1].value))
+            if not m:
+                print("无法匹配:", row[1].value)
                 continue
 
-            # 计算使用过的单元格最大数值，添加边框
-            thin_side = Side(border_style="thin", color="000000")
-            for _row in sheet.iter_rows(min_row=1, max_col=50):
-                for _cell in _row[:max_col_used]:
-                    if type(_cell) is not MergedCell:
-                        _cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
-                for _cell in _row[max_col_used:]:
-                    if type(_cell) is not MergedCell:
-                        _cell.border = Border()
-                        _cell.value = None
-                        _cell.fill = PatternFill()
+            matched_data = m.groupdict()
+            # multiMissionMain(pattern_data=patternInfo(unit=m["unit"], discipline=m["discipline"], drawing=m["drawing"]), row=row)
+            all_tasks.append(pool.submit(multiMissionMain, patternInfo(
+                unit=matched_data['unit'], discipline=matched_data['discipline'], drawing=matched_data['drawing']), row))
+
+        wait(all_tasks, return_when=ALL_COMPLETED)
+        pool.shutdown()
+
+        # 计算使用过的单元格最大数值，添加边框
+        thin_side = Side(border_style="thin", color="000000")
+        for _row in sheet.iter_rows(min_row=1, max_col=50):
+            for _cell in _row[:MAX_COL_USED]:
+                if type(_cell) is not MergedCell:
+                    _cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+            for _cell in _row[MAX_COL_USED:]:
+                if type(_cell) is not MergedCell:
+                    _cell.border = Border()
+                    _cell.value = None
+                    _cell.fill = PatternFill()
+
         wb.save(EXPORT_PATH)
+
         print(rf"Sheet '{sheet.title}' processed, total: {REQUEST_DATA[sheet.title].total}, unfinished: {REQUEST_DATA[sheet.title].unfinished}.")
 
     # 读取各子表审核进度，写入汇总sheet
@@ -459,5 +504,6 @@ if __name__ == '__main__':
             continue
         row[2].value = REQUEST_DATA[sheet_name].total
         row[4].value = REQUEST_DATA[sheet_name].unfinished
+
     wb.save(EXPORT_PATH)
     wb.close()
