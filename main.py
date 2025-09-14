@@ -352,7 +352,7 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
 
 
 def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
-    global MAX_COL_USED, REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, RED
+    global MAX_COL_USED, REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW
 
     cleaned_response = searchMail(search_params=pattern_data, mail_box="ALL")
 
@@ -503,6 +503,18 @@ if __name__ == '__main__':
                     _cell.border = Border()
                     _cell.value = None
                     _cell.fill = PatternFill()
+
+        # 动态调整表头
+        headers_group = ["待审批单位", "审批人", "审批状态"]
+
+        # 从第 8 列开始，写入直到 MAX_COL_USED
+        for col in range(9, MAX_COL_USED + 1, 3):
+            for offset, title in enumerate(headers_group):
+                sheet.cell(row=1, column=col + offset, value=title)
+
+        # 清理超出 MAX_COL_USED 的表头
+        for col in range(MAX_COL_USED + 1, 51):
+            sheet.cell(row=1, column=col, value=None)
 
         wb.save(EXPORT_PATH)
 
