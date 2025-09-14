@@ -17,28 +17,36 @@ from openpyxl.styles import PatternFill, Border, Side
 from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow, searchResult
 
+# COLOR
+BLUE: str = "00B0F0"
+YELLOW: str = "FFFF00"
+GREEN: str = "92D050"
+
+# LOCK
 ACCESS_TOKEN_LOCK = threading.Lock()
 CELL_WRITE_LOCK = threading.Lock()
 
+# PATH
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
 # EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
 EXPORT_PATH = XLSX_PATH
 
+# GLOBAL VARS
 REQUEST_DATA: dict[str, searchResult] = dict()
 MAX_COL_USED = 0
 
 MAIN_RE = re.compile(
-    r'^[ \t]*'                                        # ◇ 行首半角空白
-    r'(?:.*?\((?P<wf>[A-Za-z]+-\d+)\)[ \t]*)?'        # ◇ 可选：(WF-001039)——前后可有任意文字
-    r'.*?'                                            # ◇ 仍可再出现任意前缀（“通知：回复: 最终 ”等）
-    r'SLDS-BCEG-'                                     # ▼ 固定文件名前缀
+    r'^[ \t]*'                                        # 行首半角空白
+    r'(?:.*?\((?P<wf>[A-Za-z]+-\d+)\)[ \t]*)?'        # 可选：(WF-001039)——前后可有任意文字
+    r'.*?'                                            # 仍可再出现任意前缀（“通知：回复: 最终 ”等）
+    r'SLDS-BCEG-'                                     # 固定文件名前缀
     r'(?P<unit>\d{3})-'                               # 单体
     r'SDS-'
     r'(?P<discipline>[A-Z]+)-'                        # 专业
     r'(?P<drawing>[A-Z0-9]+)'                         # 图纸号
     r'(?:_*(?P<ver>[A-Z]|\d+\+[A-Z]|\d+[A-Z]|\d+))?'  # 版本号（可选）
     r'(?:[ \t]+(?P<title>.+))?'                       # 图名（可选）
-    r'[ \t]*$'                                        # ◇ 行尾半角空白
+    r'[ \t]*$'                                        # 行尾半角空白
 )
 
 VER_RE = re.compile(r'^(?:(?P<num>\d+)(?:\+(?P<plus_letter>[A-Z])|(?P<letter>[A-Z])?)'
@@ -180,6 +188,7 @@ def searchMail(search_params: patternInfo = patternInfo(unit="000", discipline="
 
     https://help.aconex.com/zh/apis/mail-api-developer-guide/
     """
+    global ACCESS_TOKEN_LOCK
 
     def searchQueryCreator() -> str:
         """
@@ -343,6 +352,8 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
 
 
 def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
+    global MAX_COL_USED, REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, RED
+
     cleaned_response = searchMail(search_params=pattern_data, mail_box="ALL")
 
     print([mail.subject for mail in cleaned_response])
@@ -398,9 +409,6 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
     }
 
     with CELL_WRITE_LOCK:
-        # 引入全局变量
-        global MAX_COL_USED, REQUEST_DATA
-
         # 清理审批结果、工作流编号、审批进度信息
         for a in row[6:]:
             a.value = None
@@ -422,8 +430,14 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
 
         # 写入样式
         for b in row[:8]:
-            b.fill = PatternFill("solid", fgColor="92D050"
-                                 ) if write_data.get('ver').isdigit() else PatternFill()  # green or no fill
+            if write_data.get('ver').isdigit():
+                b.fill = PatternFill("solid", fgColor=GREEN)
+            elif not write_data.get('ver').isdigit() and write_data.get('final_status') in ["code 3", "code 4"]:
+                b.fill = PatternFill("solid", fgColor=YELLOW)
+            elif not write_data.get('ver').isdigit() and not write_data.get('final_status') and not write_data.get('wf'):
+                b.fill = PatternFill("solid", fgColor=BLUE)
+            else:
+                b.fill = PatternFill()  # no fill
 
         # 更新表MAX_COL_USED
         if base_col > MAX_COL_USED:
@@ -497,6 +511,7 @@ if __name__ == '__main__':
     # 读取各子表审核进度，写入汇总sheet
     summary_sheet = wb["汇总"]
     for row in summary_sheet.iter_rows(min_row=2, max_col=6):
+        # 写入汇总表
         if row[1].value is None:
             continue
         sheet_name = clean_str(row[1].value)
@@ -505,6 +520,10 @@ if __name__ == '__main__':
             continue
         row[2].value = REQUEST_DATA[sheet_name].total
         row[4].value = REQUEST_DATA[sheet_name].unfinished
+
+        # sheet tab 添加颜色
+        if REQUEST_DATA[sheet_name].unfinished == 0:
+            wb[sheet_name].sheet_properties.tabColor = GREEN
 
     wb.save(EXPORT_PATH)
     wb.close()
