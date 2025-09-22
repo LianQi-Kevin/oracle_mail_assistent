@@ -5,3 +5,5 @@ dist
 build
 *.spec
 *.xlsx
+downloads
+test.py

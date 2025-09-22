@@ -1,2 +1,5 @@
 requests
 openpyxl
+beautifulsoup4
+lxml
+aria2p[tui]

@@ -70,3 +70,35 @@ class searchResult:
     unfinished: int = field(default=0)
     total: int = field(default=0)
     results: list[patternInfo] = field(default_factory=list)
+
+
+@dataclass
+class RegisteredDocumentAttachment:
+    attachment_id: str          # XML 属性 attachmentId
+    document_no: str            # <DocumentNo>
+    file_name: str              # <FileName>
+
+
+@dataclass
+class Recipient:
+    name: str
+    organization_name: str
+
+
+@dataclass
+class FromUserDetails:
+    name: str
+    organization_name: str
+
+
+@dataclass
+class MailDetail:
+    mail_id: str
+    subject: str
+    sent_date: datetime
+    mail_data: str
+
+    from_user_details: FromUserDetails
+    attachments: list[RegisteredDocumentAttachment] = field(default_factory=list)
+    recipients: list[Recipient] = field(default_factory=list)
+

@@ -22,6 +22,9 @@ BLUE: str = "00B0F0"
 YELLOW: str = "FFFF00"
 GREEN: str = "92D050"
 
+# XLSX_WRITE
+BASE_COL = 9
+
 # LOCK
 ACCESS_TOKEN_LOCK = threading.Lock()
 CELL_WRITE_LOCK = threading.Lock()
@@ -55,7 +58,7 @@ VER_RE = re.compile(r'^(?:(?P<num>\d+)(?:\+(?P<plus_letter>[A-Z])|(?P<letter>[A-
 
 def clean_str(s: str) -> str:
     """清理字符串"""
-    return re.sub(r'\s+', ' ', s).replace('＿', '_').strip()
+    return re.sub(r'\s+', ' ', s).replace('＿', '_').replace('/', '_').replace('\\', '_').strip()
 
 
 def sortMailsByVer(mails: list[responseMailInfo]) -> list[responseMailInfo]:
@@ -352,7 +355,7 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
 
 
 def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
-    global MAX_COL_USED, REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW
+    global MAX_COL_USED, REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, BASE_COL
 
     cleaned_response = searchMail(search_params=pattern_data, mail_box="ALL")
 
@@ -374,6 +377,9 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
     # 版本号及上传时间
     write_data['ver'] = newest_matched_data['ver'] if newest_matched_data else ''
     write_data['sentDate'] = newest_mail.SentDate.date().isoformat() if newest_mail else ''
+
+    # 写入邮件ID
+    write_data['mailID'] = str(newest_mail.mailID) if newest_mail else ''
 
     # 查询工作流
     if not newest_matched_data['ver'].isdigit() and newest_matched_data['wf']:
@@ -418,9 +424,10 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
         row[5].value = write_data.get('sentDate', '')
         row[6].value = write_data.get('final_status', '')
         row[7].value = write_data.get('wf', '')
+        row[8].value = write_data.get('mailID', '')
 
         # 写入工作流数据
-        base_col = 8    # 审核人起始列号
+        base_col = BASE_COL    # 审核人起始列号 todo: 每个row独立
 
         for wf in workflow_data:
             row[base_col].value = wf['org']
@@ -429,7 +436,7 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
             base_col += 3
 
         # 写入样式
-        for b in row[:8]:
+        for b in row[:BASE_COL]:
             if write_data.get('ver').isdigit():
                 b.fill = PatternFill("solid", fgColor=GREEN)
             elif not write_data.get('ver').isdigit() and write_data.get('final_status') in ["code 3", "code 4"]:
@@ -507,8 +514,8 @@ if __name__ == '__main__':
         # 动态调整表头
         headers_group = ["待审批单位", "审批人", "审批状态"]
 
-        # 从第 8 列开始，写入直到 MAX_COL_USED
-        for col in range(9, MAX_COL_USED + 1, 3):
+        # 从第 9 列开始，写入直到 MAX_COL_USED
+        for col in range(BASE_COL + 1, MAX_COL_USED + 1, 3):
             for offset, title in enumerate(headers_group):
                 sheet.cell(row=1, column=col + offset, value=title)
 
@@ -521,21 +528,24 @@ if __name__ == '__main__':
         print(rf"Sheet '{sheet.title}' processed, total: {REQUEST_DATA[sheet.title].total}, unfinished: {REQUEST_DATA[sheet.title].unfinished}.")
 
     # 读取各子表审核进度，写入汇总sheet
-    summary_sheet = wb["汇总"]
-    for row in summary_sheet.iter_rows(min_row=2, max_col=6):
-        # 写入汇总表
-        if row[1].value is None:
-            continue
-        sheet_name = clean_str(row[1].value)
-        if sheet_name not in REQUEST_DATA:
-            print(f"Warning: Sheet '{sheet_name}' not found in processed data.")
-            continue
-        row[2].value = REQUEST_DATA[sheet_name].total
-        row[4].value = REQUEST_DATA[sheet_name].unfinished
+    if "汇总" not in wb.sheetnames:
+        print("Warning: '汇总' sheet not found, skipping summary update.")
+    else:
+        summary_sheet = wb["汇总"]
+        for row in summary_sheet.iter_rows(min_row=2, max_col=6):
+            # 写入汇总表
+            if row[1].value is None:
+                continue
+            sheet_name = clean_str(row[1].value)
+            if sheet_name not in REQUEST_DATA:
+                print(f"Warning: Sheet '{sheet_name}' not found in processed data.")
+                continue
+            row[2].value = REQUEST_DATA[sheet_name].total
+            row[4].value = REQUEST_DATA[sheet_name].unfinished
 
-        # sheet tab 添加颜色
-        if REQUEST_DATA[sheet_name].unfinished == 0:
-            wb[sheet_name].sheet_properties.tabColor = GREEN
+            # sheet tab 添加颜色
+            if REQUEST_DATA[sheet_name].unfinished == 0:
+                wb[sheet_name].sheet_properties.tabColor = GREEN
 
     wb.save(EXPORT_PATH)
     wb.close()
