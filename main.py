@@ -58,7 +58,14 @@ VER_RE = re.compile(r'^(?:(?P<num>\d+)(?:\+(?P<plus_letter>[A-Z])|(?P<letter>[A-
 
 def clean_str(s: str) -> str:
     """清理字符串"""
-    return re.sub(r'\s+', ' ', s).replace('＿', '_').replace('/', '_').replace('\\', '_').strip()
+    return (re.sub(r'\s+', ' ', s)
+            .replace('＿', '_')
+            .replace('/', '_')
+            .replace('\\', '_')
+            .replace("（", "(")
+            .replace("）", ")")
+            .replace("：", ":")
+            .strip())
 
 
 def sortMailsByVer(mails: list[responseMailInfo]) -> list[responseMailInfo]:

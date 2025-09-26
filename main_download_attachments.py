@@ -2,7 +2,7 @@
 对于main函数测试新增函数功能
 
 手动启动aria2c RPC服务端：
-./aria2c --enable-rpc --rpc-listen-all=false --rpc-listen-port=12768 --rpc-allow-origin-all --continue --save-session=./downloads/aria2.session --file-allocation=falloc
+./aria2c.exe --enable-rpc --rpc-listen-all=false --rpc-listen-port=12768 --rpc-allow-origin-all --continue --save-session=./downloads/aria2.session --file-allocation=falloc
 """
 import html
 import re
@@ -28,7 +28,7 @@ DOWNLOAD_PATH = Path("./downloads").resolve()   # 下载目录
 RPC_PORT = 12768    # aria2c RPC 端口
 RPC_SECRET = ""     # aria2c RPC 密钥（留空则不使用密钥）
 
-ARIA2C_CLIENT = aria2p.Client(host="http://localhost", port=RPC_PORT, secret=RPC_SECRET)
+ARIA2P_API = aria2p.API(aria2p.Client(host="http://localhost", port=RPC_PORT, secret=RPC_SECRET))
 
 
 def viewMailMetadata(mail_id: str) -> MailDetail:
@@ -95,6 +95,8 @@ def viewMailMetadata(mail_id: str) -> MailDetail:
 
 def download_attachment_aria2c(attachment: RegisteredDocumentAttachment, subject: str, mail_id: str, sub_path: Optional[str] = None):
     """下载邮件附件"""
+    global ARIA2P_API
+
     def build_options(sub_dir, file_name: str):
         target_path = DOWNLOAD_PATH / sub_dir if sub_path is None else DOWNLOAD_PATH / sub_path / sub_dir
         target_path.mkdir(parents=True, exist_ok=True)
@@ -112,9 +114,10 @@ def download_attachment_aria2c(attachment: RegisteredDocumentAttachment, subject
     # 构造下载链接
     url = f"{config.resource_url}/api/projects/{config.project_id}/mail/{mail_id}/attachments/{attachment.attachment_id}"
     options = build_options(clean_str(subject), attachment.file_name)
-    gid = ARIA2C_CLIENT.add_uri([url], options=options)
-    print(f"gid: {gid}, 保存到 {options['dir']}/{options['out']}")
-    return gid
+    # gid = ARIA2C_CLIENT.add_uri([url], options=options)
+    download = ARIA2P_API.add(url, options=options)
+    print(f"gid: {download}, 保存到 {options['dir']}/{options['out']}")
+    # return gid
 
 
 if __name__ == '__main__':
