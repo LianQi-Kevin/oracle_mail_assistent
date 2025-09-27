@@ -18,8 +18,9 @@ class patternInfo:
     discipline: str
     drawing: str
     wf: Optional[str] = None
-    ver: Optional[str] = None
+    ver: Optional[str] = "*"
     title: Optional[str] = None
+    step: Optional[str] = None
 
 
 @dataclass

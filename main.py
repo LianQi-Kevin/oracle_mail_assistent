@@ -41,6 +41,7 @@ MAIN_RE = re.compile(
     r'.*?'                                            # 仍可再出现任意前缀（“通知：回复: 最终 ”等）
     r'SLDS-BCEG-'                                     # 固定文件名前缀
     r'(?P<unit>\d{3})-'                               # 单体
+    r'(?:(?P<step>\d{4})-)?'                          # 支持新增的四位新施工阶段代码（可选）
     r'SDS-'
     r'(?P<discipline>[A-Z]+)-'                        # 专业
     r'(?P<drawing>[A-Z0-9]+)'                         # 图纸号
@@ -116,11 +117,11 @@ def filter_mails(mails: List[responseMailInfo]) -> List[responseMailInfo]:
     unique = {_m.mailID: _m for _m in mails}.values()
 
     # ---------- ② 内部工具函数 ----------
-    def _parse_key(subj: str) -> Optional[Tuple[str, str, str, str]]:
+    def _parse_key(subj: str) -> Optional[Tuple[str, str, str, str, str]]:
         mo = MAIN_RE.search(subj)
         if not mo:
             return None
-        return mo.group('unit'), mo.group('discipline'), mo.group('drawing'), mo.group('ver') or ''
+        return mo.group('unit'), mo.group('discipline'), mo.group('drawing'), mo.group('ver') or '', mo.group('step') or ''
 
     def _quality(subj: str) -> int:
         if '(WF-' in subj and not subj.startswith('最终'):
@@ -138,7 +139,7 @@ def filter_mails(mails: List[responseMailInfo]) -> List[responseMailInfo]:
         return cand if k_cand > k_prev else prev
 
     # ---------- ③ 聚合并优选 ----------
-    best: dict[Tuple[str, str, str, str], responseMailInfo] = {}
+    best: dict[Tuple[str, str, str, str, str], responseMailInfo] = {}
     for _m in unique:
         key = _parse_key(_m.subject)
         if key is None:  # subject 不满足规则可视需求忽略
@@ -152,7 +153,7 @@ def responseClean(mail_response: list[responseMailInfo], search_params: patternI
     """
     Clean the mail response by filtering based title
     """
-    subject = f"SLDS-BCEG-{search_params.unit}-SDS-{search_params.discipline}-{search_params.drawing}"
+    subject = f"SLDS-BCEG-{search_params.unit}-{search_params.step}-SDS-{search_params.discipline}-{search_params.drawing}" if search_params.step else f"SLDS-BCEG-{search_params.unit}-SDS-{search_params.discipline}-{search_params.drawing}"
     # return sortMailsByVer([mail for mail in mail_response if mail.subject.startswith(subject)])
     return sortMailsByVer([mail for mail in mail_response if subject in mail.subject])
 
@@ -188,8 +189,8 @@ def requestToken() -> dict:
     return response.json()
 
 
-def searchMail(search_params: patternInfo = patternInfo(unit="000", discipline="A", drawing="A001"),
-               mail_box: Literal["INBOX", "SENTBOX", "ALL"] = "ALL") -> list[responseMailInfo]:
+def searchMail(search_params: patternInfo, mail_box: Literal["INBOX", "SENTBOX", "ALL"] = "ALL") -> list[
+    responseMailInfo]:
     """
     Search mails by subject
 
@@ -206,7 +207,8 @@ def searchMail(search_params: patternInfo = patternInfo(unit="000", discipline="
         ver      版本号, 形如 '_0', '_A'；默认为 '*' 通配全部版本
         """
         # Lucene 表达式：拆分词后用 AND 组合 + 通配符
-        tokens = f"{search_params.unit} {search_params.discipline} {search_params.drawing}{search_params.ver}".split()
+        tokens = [t for t in [search_params.unit, search_params.discipline, search_params.step,
+                              f"{search_params.drawing}{search_params.ver}"] if t]
         subject_cond = " AND ".join(f"{tok}" for tok in tokens)
         # query = rf"subject:({subject_cond}) AND corrtypeid:23"
         query = rf"subject:({subject_cond})"
@@ -347,17 +349,6 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
     return parseWorkflowSearch(response.content)
 
 
-# def cellWriter(cell: Cell, value: Optional[str]):
-#     old_value = cell.value
-#     old_color = cell.font.name
-#
-#     if old_value != value and old_value is not None:
-#         cell.value = value
-#         cell.font = Font(
-#
-#         )
-
-
 def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
     global REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, BASE_COL
 
@@ -408,15 +399,16 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
                     "status": workflow.step_status
                 })
 
-    # 完成请求，写入 REQUEST_DATA
-    response_data = {
-        "unit": matched_data['unit'],
-        "discipline": matched_data['discipline'],
-        "drawing": matched_data['drawing'],
-        "wf": newest_matched_data['wf'] if newest_matched_data else None,
-        "ver": newest_matched_data['ver'] if newest_matched_data and newest_matched_data['ver'] else "*",
-        "title": newest_matched_data['title'] if newest_matched_data and newest_matched_data['title'] else None,
-    }
+    # 完成请求, 构造patternInfo, 写入 REQUEST_DATA
+    response_data = patternInfo(
+        unit=pattern_data.unit,
+        discipline=pattern_data.discipline,
+        drawing=pattern_data.drawing,
+        wf=newest_matched_data['wf'] if newest_matched_data else None,
+        ver=newest_matched_data['ver'] if newest_matched_data and newest_matched_data['ver'] else "*",
+        title=newest_matched_data['title'] if newest_matched_data and newest_matched_data['title'] else None,
+        step=newest_matched_data['step'] if newest_matched_data and newest_matched_data['step'] else None,
+    )
 
     with CELL_WRITE_LOCK:
         # 清理审批结果、工作流编号、审批进度信息
@@ -451,7 +443,7 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
                 b.fill = PatternFill()  # no fill
 
         # 写入全局变量
-        REQUEST_DATA[sheet.title].results.append(patternInfo(**response_data))
+        REQUEST_DATA[sheet.title].results.append(response_data)
         REQUEST_DATA[sheet.title].total += 1
         REQUEST_DATA[sheet.title].unfinished += 1 if newest_matched_data and not newest_matched_data['ver'].isdigit() else 0
         REQUEST_DATA[sheet.title].max_col_used = base_col if base_col > REQUEST_DATA[sheet.title].max_col_used else REQUEST_DATA[sheet.title].max_col_used
@@ -480,7 +472,7 @@ if __name__ == '__main__':
         REQUEST_DATA[sheet.title] = searchResult(sheet_name=sheet.title)
 
         # 构造线程池
-        pool = ThreadPoolExecutor(max_workers=100)
+        pool = ThreadPoolExecutor(max_workers=min(32, (os.cpu_count() or 1) * 5))
         all_tasks = []
 
         # 遍历行，跳过表头
@@ -495,7 +487,9 @@ if __name__ == '__main__':
             matched_data = m.groupdict()
             # multiMissionMain(pattern_data=patternInfo(unit=m["unit"], discipline=m["discipline"], drawing=m["drawing"]), row=row)
             all_tasks.append(pool.submit(multiMissionMain, patternInfo(
-                unit=matched_data['unit'], discipline=matched_data['discipline'], drawing=matched_data['drawing']), row))
+                unit=matched_data["unit"], discipline=matched_data["discipline"],
+                drawing=matched_data["drawing"], step=matched_data["step"]
+            ), row))
 
         # 等待所有任务完成
         wait(all_tasks, return_when=ALL_COMPLETED)
@@ -534,7 +528,7 @@ if __name__ == '__main__':
         print("Warning: '汇总' sheet not found, skipping summary update.")
     else:
         summary_sheet = wb["汇总"]
-        for row in summary_sheet.iter_rows(min_row=2, max_col=6):
+        for row in summary_sheet.iter_rows(min_row=2, max_col=5):
             # 写入汇总表
             if row[1].value is None:
                 continue
@@ -548,6 +542,8 @@ if __name__ == '__main__':
             # sheet tab 添加颜色
             if REQUEST_DATA[sheet_name].unfinished == 0:
                 wb[sheet_name].sheet_properties.tabColor = GREEN
+            else:
+                wb[sheet_name].sheet_properties.tabColor = None
 
     wb.save(EXPORT_PATH)
     wb.close()
