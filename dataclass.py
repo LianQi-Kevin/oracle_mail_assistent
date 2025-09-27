@@ -18,7 +18,7 @@ class patternInfo:
     discipline: str
     drawing: str
     wf: Optional[str] = None
-    ver: Optional[str] = "*"
+    ver: Optional[str] = None
     title: Optional[str] = None
 
 
@@ -70,6 +70,7 @@ class searchResult:
     unfinished: int = field(default=0)
     total: int = field(default=0)
     results: list[patternInfo] = field(default_factory=list)
+    max_col_used: int = field(default=9)
 
 
 @dataclass
@@ -101,4 +102,3 @@ class MailDetail:
     from_user_details: FromUserDetails
     attachments: list[RegisteredDocumentAttachment] = field(default_factory=list)
     recipients: list[Recipient] = field(default_factory=list)
-

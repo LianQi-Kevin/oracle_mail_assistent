@@ -10,9 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 import openpyxl
 import requests
 from openpyxl.cell import MergedCell, Cell
-# from openpyxl.cell import Cell
 from openpyxl.styles import PatternFill, Border, Side
-# from openpyxl.styles import Font
 
 from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow, searchResult
@@ -36,7 +34,6 @@ EXPORT_PATH = XLSX_PATH
 
 # GLOBAL VARS
 REQUEST_DATA: dict[str, searchResult] = dict()
-MAX_COL_USED = 0
 
 MAIN_RE = re.compile(
     r'^[ \t]*'                                        # 行首半角空白
@@ -362,7 +359,7 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
 
 
 def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
-    global MAX_COL_USED, REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, BASE_COL
+    global REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, BASE_COL
 
     cleaned_response = searchMail(search_params=pattern_data, mail_box="ALL")
 
@@ -453,14 +450,11 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
             else:
                 b.fill = PatternFill()  # no fill
 
-        # 更新表MAX_COL_USED
-        if base_col > MAX_COL_USED:
-            MAX_COL_USED = base_col
-
         # 写入全局变量
         REQUEST_DATA[sheet.title].results.append(patternInfo(**response_data))
         REQUEST_DATA[sheet.title].total += 1
         REQUEST_DATA[sheet.title].unfinished += 1 if newest_matched_data and not newest_matched_data['ver'].isdigit() else 0
+        REQUEST_DATA[sheet.title].max_col_used = base_col if base_col > REQUEST_DATA[sheet.title].max_col_used else REQUEST_DATA[sheet.title].max_col_used
 
     return None
 
@@ -486,7 +480,7 @@ if __name__ == '__main__':
         REQUEST_DATA[sheet.title] = searchResult(sheet_name=sheet.title)
 
         # 构造线程池
-        pool = ThreadPoolExecutor(max_workers=50)
+        pool = ThreadPoolExecutor(max_workers=100)
         all_tasks = []
 
         # 遍历行，跳过表头
@@ -503,16 +497,17 @@ if __name__ == '__main__':
             all_tasks.append(pool.submit(multiMissionMain, patternInfo(
                 unit=matched_data['unit'], discipline=matched_data['discipline'], drawing=matched_data['drawing']), row))
 
+        # 等待所有任务完成
         wait(all_tasks, return_when=ALL_COMPLETED)
         pool.shutdown()
 
         # 计算使用过的单元格最大数值，添加边框
         thin_side = Side(border_style="thin", color="000000")
         for _row in sheet.iter_rows(min_row=1, max_col=50):
-            for _cell in _row[:MAX_COL_USED]:
+            for _cell in _row[:REQUEST_DATA[sheet.title].max_col_used]:
                 if type(_cell) is not MergedCell:
                     _cell.border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
-            for _cell in _row[MAX_COL_USED:]:
+            for _cell in _row[REQUEST_DATA[sheet.title].max_col_used:]:
                 if type(_cell) is not MergedCell:
                     _cell.border = Border()
                     _cell.value = None
@@ -521,13 +516,13 @@ if __name__ == '__main__':
         # 动态调整表头
         headers_group = ["待审批单位", "审批人", "审批状态"]
 
-        # 从第 9 列开始，写入直到 MAX_COL_USED
-        for col in range(BASE_COL + 1, MAX_COL_USED + 1, 3):
+        # 从第 9 列开始，写入直到 sheet 的 max_col_used
+        for col in range(BASE_COL + 1, REQUEST_DATA[sheet.title].max_col_used + 1, 3):
             for offset, title in enumerate(headers_group):
                 sheet.cell(row=1, column=col + offset, value=title)
 
-        # 清理超出 MAX_COL_USED 的表头
-        for col in range(MAX_COL_USED + 1, 51):
+        # 清理超出  sheet 的 max_col_used 的表头
+        for col in range(REQUEST_DATA[sheet.title].max_col_used + 1, 51):
             sheet.cell(row=1, column=col, value=None)
 
         wb.save(EXPORT_PATH)
