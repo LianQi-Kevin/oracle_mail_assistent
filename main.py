@@ -6,19 +6,16 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
+from urllib3.util import Retry
 
 import openpyxl
 import requests
+from requests.adapters import HTTPAdapter
 from openpyxl.cell import MergedCell, Cell
 from openpyxl.styles import PatternFill, Border, Side
 
 from config import config
 from dataclass import responseMailInfo, patternInfo, UserRef, WorkflowSearchResult, Workflow, searchResult
-
-# COLOR
-BLUE: str = "00B0F0"
-YELLOW: str = "FFFF00"
-GREEN: str = "92D050"
 
 # XLSX_WRITE
 BASE_COL = 9
@@ -29,8 +26,8 @@ CELL_WRITE_LOCK = threading.Lock()
 
 # PATH
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
-# EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
-EXPORT_PATH = XLSX_PATH
+EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
+# EXPORT_PATH = XLSX_PATH
 
 # GLOBAL VARS
 REQUEST_DATA: dict[str, searchResult] = dict()
@@ -64,6 +61,38 @@ def clean_str(s: str) -> str:
             .replace("）", ")")
             .replace("：", ":")
             .strip())
+
+
+_thread_local = threading.local()
+
+
+def get_session() -> requests.Session:
+    # 如果当前线程尚未创建 Session，则新建并配置
+    if not hasattr(_thread_local, "session"):
+        session = requests.Session()
+        # 全局代理
+        if config.proxies:
+            session.proxies.update(config.proxies)
+        # 重试策略
+        retry = Retry(
+            total=config.retry_times,
+            backoff_factor=config.retry_delay,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _thread_local.session = session
+    return _thread_local.session
+
+
+def get_with_retry(url, **kwargs):
+    return get_session().get(url, **kwargs)
+
+
+def post_with_retry(url, **kwargs):
+    return get_session().post(url, **kwargs)
 
 
 def sortMailsByVer(mails: list[responseMailInfo]) -> list[responseMailInfo]:
@@ -175,12 +204,11 @@ def requestToken() -> dict:
         b64_encoded = base64.b64encode(auth_str.encode()).decode()
         return b64_encoded
 
-    response = requests.post(url=f"{config.lobby_url}/auth/token",
-                             headers={"Content-Type": "application/x-www-form-urlencoded",
-                                      "Authorization": f"Basic {basicAuthEncode(config.client_id, config.client_secret)}"},
-                             data={"grant_type": "client_credentials", "user_id": config.aconex_user_id,
-                                   "user_site": config.aconex_instance_url},
-                             proxies={"http": "127.0.0.1:52538", "https": "127.0.0.1:52538"})
+    response = post_with_retry(url=f"{config.lobby_url}/auth/token",
+                               headers={"Content-Type": "application/x-www-form-urlencoded",
+                                        "Authorization": f"Basic {basicAuthEncode(config.client_id, config.client_secret)}"},
+                               data={"grant_type": "client_credentials", "user_id": config.aconex_user_id,
+                                     "user_site": config.aconex_instance_url})
 
     response.raise_for_status()
 
@@ -241,12 +269,11 @@ def searchMail(search_params: patternInfo, mail_box: Literal["INBOX", "SENTBOX",
 
     # SentBox
     if mail_box == "SENTBOX" or mail_box == "ALL":
-        response = requests.get(url=f"{config.resource_url}/api/projects/{config.project_id}/mail",
-                                headers={"Authorization": f"Bearer {config.access_token}"},
-                                params={"mail_box": "SENTBOX", "search_query": searchQueryCreator(),
-                                        "return_fields": "docno,subject,sentdate,allAttachmentCount,totalAttachmentsSize",
-                                        "sort_field": "sentdate", "sort_direction": "DESC"},
-                                proxies={"http": "127.0.0.1:52538", "https": "127.0.0.1:52538"})
+        response = get_with_retry(url=f"{config.resource_url}/api/projects/{config.project_id}/mail",
+                                  headers={"Authorization": f"Bearer {config.access_token}"},
+                                  params={"mail_box": "SENTBOX", "search_query": searchQueryCreator(),
+                                          "return_fields": "docno,subject,sentdate,allAttachmentCount,totalAttachmentsSize",
+                                          "sort_field": "sentdate", "sort_direction": "DESC"})
 
         response.raise_for_status()
 
@@ -254,12 +281,11 @@ def searchMail(search_params: patternInfo, mail_box: Literal["INBOX", "SENTBOX",
 
     # InBox
     if mail_box == "INBOX" or mail_box == "ALL":
-        response = requests.get(url=f"{config.resource_url}/api/projects/{config.project_id}/mail",
-                                headers={"Authorization": f"Bearer {config.access_token}"},
-                                params={"mail_box": "INBOX", "search_query": searchQueryCreator(),
-                                        "return_fields": "docno,subject,sentdate,allAttachmentCount,totalAttachmentsSize",
-                                        "sort_field": "sentdate", "sort_direction": "DESC"},
-                                proxies={"http": "127.0.0.1:52538", "https": "127.0.0.1:52538"})
+        response = get_with_retry(url=f"{config.resource_url}/api/projects/{config.project_id}/mail",
+                                  headers={"Authorization": f"Bearer {config.access_token}"},
+                                  params={"mail_box": "INBOX", "search_query": searchQueryCreator(),
+                                          "return_fields": "docno,subject,sentdate,allAttachmentCount,totalAttachmentsSize",
+                                          "sort_field": "sentdate", "sort_direction": "DESC"},)
 
         response.raise_for_status()
         mail += responseMailInfoPostprocess(response.content)
@@ -339,18 +365,17 @@ def searchWorkflow(workflow_num: str) -> WorkflowSearchResult:
             print("Access token expired, refreshing...")
             requestToken()
 
-    response = requests.get(url=f"{config.resource_url}/api/projects/{config.project_id}/workflows/search",
-                            headers={"Authorization": f"Bearer {config.access_token}",
-                                     "Accept": "application/vnd.aconex.workflow.v1+xml", },
-                            params={"workflow_number": {workflow_num}, },
-                            proxies={"http": "127.0.0.1:52538", "https": "127.0.0.1:52538"})
+    response = get_with_retry(url=f"{config.resource_url}/api/projects/{config.project_id}/workflows/search",
+                              headers={"Authorization": f"Bearer {config.access_token}",
+                                       "Accept": "application/vnd.aconex.workflow.v1+xml", },
+                              params={"workflow_number": {workflow_num}})
 
     response.raise_for_status()
     return parseWorkflowSearch(response.content)
 
 
 def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
-    global REQUEST_DATA, CELL_WRITE_LOCK, GREEN, YELLOW, BASE_COL
+    global REQUEST_DATA, CELL_WRITE_LOCK, BASE_COL
 
     cleaned_response = searchMail(search_params=pattern_data, mail_box="ALL")
 
@@ -434,11 +459,11 @@ def multiMissionMain(pattern_data: patternInfo, row: Tuple[Cell, ...]):
         # 写入样式
         for b in row[:BASE_COL]:
             if write_data.get('ver').isdigit():
-                b.fill = PatternFill("solid", fgColor=GREEN)
+                b.fill = PatternFill("solid", fgColor=config.finish_fill_color)
             elif not write_data.get('ver').isdigit() and write_data.get('final_status') in ["code 3", "code 4"]:
-                b.fill = PatternFill("solid", fgColor=YELLOW)
+                b.fill = PatternFill("solid", fgColor=config.unSuccess_fill_color)
             elif not write_data.get('ver').isdigit() and not write_data.get('final_status') and not write_data.get('wf'):
-                b.fill = PatternFill("solid", fgColor=BLUE)
+                b.fill = PatternFill("solid", fgColor=config.warning_fill_color)
             else:
                 b.fill = PatternFill()  # no fill
 
@@ -476,20 +501,20 @@ if __name__ == '__main__':
         all_tasks = []
 
         # 遍历行，跳过表头
-        for row in sheet.iter_rows(min_row=2, max_col=50):
-            if row[1].value is None:
+        for _row in sheet.iter_rows(min_row=2, max_col=50):
+            if _row[1].value is None:
                 continue
-            m = MAIN_RE.match(clean_str(row[1].value))
+            m = MAIN_RE.match(clean_str(_row[1].value))
             if not m:
-                print("无法匹配:", row[1].value)
+                print("无法匹配:", _row[1].value)
                 continue
 
             matched_data = m.groupdict()
-            # multiMissionMain(pattern_data=patternInfo(unit=m["unit"], discipline=m["discipline"], drawing=m["drawing"]), row=row)
+            # multiMissionMain(pattern_data=patternInfo(unit=m["unit"], discipline=m["discipline"], drawing=m["drawing"]), row=_row)
             all_tasks.append(pool.submit(multiMissionMain, patternInfo(
                 unit=matched_data["unit"], discipline=matched_data["discipline"],
                 drawing=matched_data["drawing"], step=matched_data["step"]
-            ), row))
+            ), _row))
 
         # 等待所有任务完成
         wait(all_tasks, return_when=ALL_COMPLETED)
@@ -528,20 +553,20 @@ if __name__ == '__main__':
         print("Warning: '汇总' sheet not found, skipping summary update.")
     else:
         summary_sheet = wb["汇总"]
-        for row in summary_sheet.iter_rows(min_row=2, max_col=5):
+        for _row in summary_sheet.iter_rows(min_row=2, max_col=5):
             # 写入汇总表
-            if row[1].value is None:
+            if _row[1].value is None:
                 continue
-            sheet_name = clean_str(row[1].value)
+            sheet_name = clean_str(_row[1].value)
             if sheet_name not in REQUEST_DATA:
                 print(f"Warning: Sheet '{sheet_name}' not found in processed data.")
                 continue
-            row[2].value = REQUEST_DATA[sheet_name].total
-            row[4].value = REQUEST_DATA[sheet_name].unfinished
+            _row[2].value = REQUEST_DATA[sheet_name].total
+            _row[4].value = REQUEST_DATA[sheet_name].unfinished
 
             # sheet tab 添加颜色
             if REQUEST_DATA[sheet_name].unfinished == 0:
-                wb[sheet_name].sheet_properties.tabColor = GREEN
+                wb[sheet_name].sheet_properties.tabColor = config.finish_fill_color
             else:
                 wb[sheet_name].sheet_properties.tabColor = None
 
