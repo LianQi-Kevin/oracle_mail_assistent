@@ -22,8 +22,8 @@ class Config:
 
     # fill colors
     finish_fill_color: str = "92D050"  # Green
-    unSuccess_fill_color: str = "00B0F0"  # Blue
-    warning_fill_color: str = "FFFF00"  # Yellow
+    unSuccess_fill_color: str = "FFFF00"  # Yellow
+    warning_fill_color: str = "00B0F0"  # Blue
 
 
 config = Config()

@@ -26,8 +26,8 @@ CELL_WRITE_LOCK = threading.Lock()
 
 # PATH
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
-EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
-# EXPORT_PATH = XLSX_PATH
+# EXPORT_PATH = rf"./{os.path.splitext(os.path.basename(XLSX_PATH))[0]}_out.xlsx"
+EXPORT_PATH = XLSX_PATH
 
 # GLOBAL VARS
 REQUEST_DATA: dict[str, searchResult] = dict()
