@@ -79,6 +79,10 @@ class RegisteredDocumentAttachment:
     attachment_id: str          # XML 属性 attachmentId
     document_no: str            # <DocumentNo>
     file_name: str              # <FileName>
+    file_size: str              # <FileSize>，字节数
+    title: str                  # <Title>
+    revision: str               # <Revision>
+    document_id: str            # <DocumentId>
 
 
 @dataclass

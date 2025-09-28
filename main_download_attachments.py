@@ -8,10 +8,9 @@ import html
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Union
 
 import openpyxl
-import requests
 from bs4 import BeautifulSoup
 import aria2p
 
@@ -19,7 +18,7 @@ from pathlib import Path
 
 from config import config
 from dataclass import MailDetail, RegisteredDocumentAttachment, FromUserDetails, Recipient
-from main import requestToken, clean_str
+from main import requestToken, clean_str, get_with_retry
 
 XLSX_PATH = r"./图纸进度跟踪表.xlsx"
 
@@ -31,7 +30,7 @@ RPC_SECRET = ""     # aria2c RPC 密钥（留空则不使用密钥）
 ARIA2P_API = aria2p.API(aria2p.Client(host="http://localhost", port=RPC_PORT, secret=RPC_SECRET))
 
 
-def viewMailMetadata(mail_id: str) -> MailDetail:
+def viewMailMetadata(mail_id: Union[str, int]) -> MailDetail:
     """获取邮件元数据"""
     def _parse_datetime(dt: str) -> Optional[datetime]:
         """UTC ↔ +08:00 转换（保留毫秒）"""
@@ -68,7 +67,12 @@ def viewMailMetadata(mail_id: str) -> MailDetail:
         # ----- 附件列表 -----
         attachments = [RegisteredDocumentAttachment(attachment_id=a.attrib.get("attachmentId"),
                                                     document_no=_get_text(a, "DocumentNo"),
-                                                    file_name=_get_text(a, "FileName"), ) for a in
+                                                    file_name=_get_text(a, "FileName"),
+                                                    file_size=_get_text(a, "FileSize"),
+                                                    title=_get_text(a, "Title"),
+                                                    revision=_get_text(a, "Revision"),
+                                                    document_id=_get_text(a, "DocumentId"),
+                                                    ) for a in
                        (root.find("Attachments") or [])]
 
         # ----- 收件人列表 -----
@@ -86,9 +90,8 @@ def viewMailMetadata(mail_id: str) -> MailDetail:
                           mail_data=_html_to_text(_get_text(root, "MailData")), from_user_details=from_user_details,
                           attachments=attachments, recipients=recipients, )
 
-    response = requests.get(url=f"{config.resource_url}/api/projects/{config.project_id}/mail/{mail_id}",
-                            headers={"Authorization": f"Bearer {config.access_token}"},
-                            proxies={"http": "127.0.0.1:52538", "https": "127.0.0.1:52538"})
+    response = get_with_retry(url=f"{config.resource_url}/api/projects/{config.project_id}/mail/{mail_id}",
+                              headers={"Authorization": f"Bearer {config.access_token}"})
     response.raise_for_status()
     return postprocess(xml_text=response.content)
 
@@ -114,9 +117,9 @@ def download_attachment_aria2c(attachment: RegisteredDocumentAttachment, subject
     # 构造下载链接
     url = f"{config.resource_url}/api/projects/{config.project_id}/mail/{mail_id}/attachments/{attachment.attachment_id}"
     options = build_options(clean_str(subject), attachment.file_name)
-    # gid = ARIA2C_CLIENT.add_uri([url], options=options)
-    download = ARIA2P_API.add(url, options=options)
-    print(f"gid: {download}, 保存到 {options['dir']}/{options['out']}")
+
+    download = ARIA2P_API.add(url, options=options)[0]
+    print(f"gid: {download.gid}, 保存到 {options['dir']}/{options['out']}")
     # return gid
 
 
