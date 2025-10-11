@@ -5,3 +5,5 @@ lxml
 aria2p[tui]
 urllib3
 pyinstaller
+selenium==4.35.0
+webdriver-manager

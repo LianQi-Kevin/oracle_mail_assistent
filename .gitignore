@@ -6,3 +6,4 @@ build
 *.xlsx
 downloads
 test.py
+cache
