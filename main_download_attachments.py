@@ -20,7 +20,7 @@ from config import config
 from dataclass import MailDetail, RegisteredDocumentAttachment, FromUserDetails, Recipient
 from main import requestToken, clean_str, get_with_retry
 
-XLSX_PATH = r"./图纸进度跟踪表.xlsx"
+XLSX_PATH = r"./图纸进度跟踪表_download.xlsx"
 
 # aria2p
 DOWNLOAD_PATH = Path("./downloads").resolve()   # 下载目录
@@ -118,6 +118,12 @@ def download_attachment_aria2c(attachment: RegisteredDocumentAttachment, subject
     url = f"{config.resource_url}/api/projects/{config.project_id}/mail/{mail_id}/attachments/{attachment.attachment_id}"
     options = build_options(clean_str(subject), attachment.file_name)
 
+    # 检查预期文件是否已经存在
+    expected_file = Path(options['dir']) / options['out']
+    if expected_file.exists():
+        print(f"文件已存在，跳过下载: {expected_file}")
+        return
+
     download = ARIA2P_API.add(url, options=options)[0]
     print(f"gid: {download.gid}, 保存到 {options['dir']}/{options['out']}")
     # return gid
@@ -127,13 +133,19 @@ if __name__ == '__main__':
     requestToken()
 
     wb = openpyxl.load_workbook(XLSX_PATH)
-    for sheet in wb.worksheets:
-        if sheet.title in ["汇总"]:
-            continue
-        for row in sheet.iter_rows(min_row=2, max_col=50, values_only=True):
-            if row[1] is not None and row[4].isdigit():
-                data = {"id": row[1], "name": row[2], "ver": row[4], "mail_ID": row[8]}
-                mail_response = viewMailMetadata(mail_id=data.get("mail_ID"))
-                for att in mail_response.attachments:
-                    print(f"{mail_response.subject} 附件: {att.file_name} ({att.attachment_id})")
-                    download_attachment_aria2c(att, subject=mail_response.subject, mail_id=data.get('mail_ID'), sub_path=sheet.title)
+    sheet_list = ["建筑", "结构", "防水", "粗装", "1#楼精装", "泛光照明"]
+    sheet = wb[sheet_list[5]]
+
+    for row in sheet.iter_rows(min_row=2, max_col=50, values_only=True):
+        if row[1] is not None and row[4].isdigit():
+            data = {"id": row[1], "name": row[2], "ver": row[4], "mail_ID": row[8]}
+            mail_response = viewMailMetadata(mail_id=data.get("mail_ID"))
+            if "作废" in mail_response.subject:
+                print("跳过作废邮件:", mail_response.subject)
+                continue
+            if "转发" in mail_response.subject:
+                print("跳过转发邮件:", mail_response.subject)
+                continue
+            for att in mail_response.attachments:
+                print(f"{mail_response.subject} 附件: {att.file_name} ({att.attachment_id})")
+                download_attachment_aria2c(att, subject=mail_response.subject, mail_id=data.get('mail_ID'), sub_path=sheet.title)

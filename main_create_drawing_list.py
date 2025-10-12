@@ -1,28 +1,38 @@
-"""used to create the drawing list with business requirements"""
+"""
+used to create the drawing list with business requirements
+
+输出目录结构:
+    建筑重计量图纸目录
+      ├─ 1.图纸确认
+      ├─ 2.图纸审核证明
+      └─ 建筑重计量图纸目录.xlsx
+"""
+import base64
+import json
 import os.path
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-import json
-import base64
 
 import openpyxl
-from dataclasses import dataclass, field
-
+from selenium import webdriver
 from selenium.webdriver import ActionChains
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.print_page_options import PrintOptions
-from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.support.wait import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
+from config import config
 from dataclass import patternInfo
 from main import requestToken, searchMail, MAIN_RE
 from main_download_attachments import viewMailMetadata
-from config import config
 
 XLSX_PATH: str = r"./图纸进度跟踪表.xlsx"
-EXPORT_PATH: str = r"./建筑重计量图纸目录.xlsx"
+EXPORT_PATH: str = r"./建筑重计量图纸目录/建筑重计量图纸目录.xlsx"
 
 # 邮件缓存路径
 MAIL_CACHE_PATH = r"./cache/mail"
@@ -50,7 +60,7 @@ def get_drawing_list() -> list[DrawingItem]:
         drawing_item = DrawingItem(
             first_subject=search_response_list[0].subject,
             first_mail_id=search_response_list[0].mailID,
-            second_subject=search_response_list[1].subject if len(search_response_list) > 1 else "",
+            second_subject=search_response_list[1].subject.split(") ")[1] if len(search_response_list) > 1 else "",
             second_mail_id=search_response_list[1].mailID if len(search_response_list) > 1 else -1,
             attachments=[],
         )
@@ -104,12 +114,9 @@ def get_drawing_list() -> list[DrawingItem]:
     return _info_list
 
 
-# selenium
-def get_driver():
+def get_driver() -> WebDriver:
+    """get the selenium web driver"""
     global PROFILE_DIR
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-
     chrome_options = Options()
     # 设置用户数据目录
     chrome_options.add_argument(f"--user-data-dir={PROFILE_DIR}")
@@ -119,12 +126,12 @@ def get_driver():
     chrome_options.add_argument('--disable-gpu')
 
     # 禁用默认关闭
-    chrome_options.add_experimental_option("detach", True)
+    # chrome_options.add_experimental_option("detach", True)
 
     # 隐藏特征
-    chrome_options.add_argument('ignore-certificate-errors')
+    chrome_options.add_argument('--ignore-certificate-errors')
     chrome_options.add_argument(
-        'user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) '
+        '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) '
         'Chrome/109.0.5414.74 Safari/537.36')
     chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
     chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -161,22 +168,58 @@ def get_driver():
     return _driver
 
 
+def get_mail_pdf(web_driver: WebDriver, mail_id: int) -> bytes:
+    """get the mail pdf by mail id"""
+    # 打开邮件页面-1
+    web_driver.get(
+        f"https://asia1.aconex.com/rsrc/20251003.0424/zh_CN_DOC/mail/view/index.html#/{config.project_id}/{mail_id}")
+    print(f"正在打开邮件 {mail_id} 页面...")
+    # 等待页面完全加载
+    WebDriverWait(web_driver, timeout=10).until(
+        EC.element_to_be_clickable((By.XPATH, "//a[@ng-click='toggleCollapsed()' and normalize-space(.)='消息']")))
+
+    time.sleep(2)
+    WebDriverWait(web_driver, timeout=3).until(
+        EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.) = '打印']")))
+    print_element = web_driver.find_element(By.XPATH, "//button[normalize-space(.) = '打印']")
+    ActionChains(driver=web_driver).move_to_element(print_element).click(print_element).perform()
+
+    time.sleep(2)
+    WebDriverWait(web_driver, timeout=3).until(
+        EC.element_to_be_clickable((By.XPATH, "//a[@data-automation-id='mailNavBar-printScreenModeNoThread']")))
+    no_thread_element = web_driver.find_element(By.XPATH, "//a[@data-automation-id='mailNavBar-printScreenModeNoThread']")
+    ActionChains(driver=web_driver).move_to_element(no_thread_element).click(no_thread_element).perform()
+
+    # 打印页面
+    print_options = PrintOptions()
+    _pdf = web_driver.print_page(print_options)
+    return base64.b64decode(_pdf)
+
+
 if __name__ == '__main__':
     requestToken()
 
+    # 构造输出结构
+    confirm_path = Path(r"./建筑重计量图纸目录/1.图纸确认")
+    confirm_path.mkdir(parents=True, exist_ok=True)
+    verify_path = Path(r"./建筑重计量图纸目录/2.图纸审核证明")
+    verify_path.mkdir(parents=True, exist_ok=True)
+
+    # 构造邮件缓存目录
     mail_cache = Path(MAIL_CACHE_PATH)
     mail_cache.mkdir(parents=True, exist_ok=True)
 
-    info_list = get_drawing_list()
+    # info_list = get_drawing_list()
+    # exit()
 
     # 读取本地json
-    # info_list: list[DrawingItem] = []
-    # for file in os.listdir(MAIL_CACHE_PATH):
-    #     if file.endswith(".json"):
-    #         with open(rf"{MAIL_CACHE_PATH}/{file}", "r", encoding="utf-8") as f:
-    #             data = json.load(f)
-    #             info_list.append(DrawingItem(**data))
-    # print(f"共读取 {len(info_list)} 条数据")
+    info_list: list[DrawingItem] = []
+    for file in os.listdir(MAIL_CACHE_PATH):
+        if file.endswith(".json"):
+            with open(rf"{MAIL_CACHE_PATH}/{file}", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                info_list.append(DrawingItem(**data))
+    print(f"共读取 {len(info_list)} 条数据")
 
     # 获取driver
     driver = get_driver()
@@ -184,27 +227,17 @@ if __name__ == '__main__':
     input("请在打开的浏览器中登录 Aconex 后，按回车继续...")
 
     for item in info_list:
-        # 打开邮件页面-1
-        driver.get(f"https://asia1.aconex.com/rsrc/20251003.0424/zh_CN_DOC/mail/view/index.html#/{config.project_id}/{item.first_mail_id}")
-        # 等待页面完全加载
-        WebDriverWait(driver, timeout=10).until(EC.element_to_be_clickable((By.XPATH, "//a[@ng-click='toggleCollapsed()' and normalize-space(.)='消息']")))
-
-        WebDriverWait(driver, timeout=3).until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.) = '打印']")))
-        print_element = driver.find_element(By.XPATH, "//button[normalize-space(.) = '打印']")
-        ActionChains(driver=driver).move_to_element(print_element).click(print_element).perform()
-
-        time.sleep(1)
-        WebDriverWait(driver, timeout=3).until(EC.element_to_be_clickable((By.XPATH, "//a[@data-automation-id='mailNavBar-printScreenModeNoThread']")))
-        no_thread_element = driver.find_element(By.XPATH, "//a[@data-automation-id='mailNavBar-printScreenModeNoThread']")
-        ActionChains(driver=driver).move_to_element(no_thread_element).click(no_thread_element).perform()
-
-        # 打印页面
-        print_options = PrintOptions()
-        pdf = driver.print_page(print_options)
-        with open(rf"./cache/mail/{item.first_mail_id}.pdf", "wb") as f:
-            f.write(base64.b64decode(pdf))
-        print(f"已保存邮件 {item.first_mail_id}.pdf")
-
-    input("全部完成后请按回车退出...")
-
-    # driver.quit()
+        pdf_1 = get_mail_pdf(web_driver=driver, mail_id=item.first_mail_id)
+        save_path = confirm_path / rf"{item.first_subject}.pdf"
+        with open(save_path, "wb") as f:
+            f.write(pdf_1)
+        print(f"已保存邮件 {item.first_subject} ({item.first_mail_id}) 到 {save_path}")
+        if item.second_mail_id == -1:
+            print(f"邮件 {item.first_subject} 没有对应的审核证明，跳过")
+            continue
+        pdf_2 = get_mail_pdf(web_driver=driver, mail_id=item.second_mail_id)
+        save_path = verify_path / rf"{item.second_subject}.pdf"
+        with open(save_path, "wb") as f:
+            f.write(pdf_2)
+        print(f"已保存邮件 {item.second_subject} ({item.second_mail_id}) 到 {save_path}")
+    driver.quit()

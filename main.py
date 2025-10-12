@@ -153,9 +153,9 @@ def filter_mails(mails: List[responseMailInfo]) -> List[responseMailInfo]:
         return mo.group('unit'), mo.group('discipline'), mo.group('drawing'), mo.group('ver') or '', mo.group('step') or ''
 
     def _quality(subj: str) -> int:
-        if '(WF-' in subj and not subj.startswith('最终'):
+        if '(WF-' in subj and subj.startswith('最终'):
             return 2
-        if '(WF-' in subj:
+        elif '(WF-' in subj:
             return 1
         return 0
 
