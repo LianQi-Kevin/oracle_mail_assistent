@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import openpyxl
+from openpyxl.styles import Side, Border
 from selenium import webdriver
 from selenium.webdriver import ActionChains
 from selenium.webdriver.chrome.options import Options
@@ -96,9 +97,14 @@ def get_drawing_list() -> list[DrawingItem]:
     wb.close()
 
     # 写图纸目录
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "建筑重计量图纸目录"
+    if os.path.exists(EXPORT_PATH):
+        wb = openpyxl.load_workbook(EXPORT_PATH)
+        wb.remove(wb["建筑重计量图纸目录"])
+        ws = wb.create_sheet(title="建筑重计量图纸目录", index=0)
+    else:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "建筑重计量图纸目录"
     ws.append(["序号", "图名", "图号"])  # 表头
     idx = 1
     for _item in _info_list:
@@ -108,6 +114,13 @@ def get_drawing_list() -> list[DrawingItem]:
         # 合并图号列
         if len(_item.attachments) > 1:
             ws.merge_cells("C{}:C{}".format(idx - len(_item.attachments) + 1, idx))
+
+    # 为所有活动单元格增加边框
+    thin_side = Side(border_style="thin", color="000000")
+    thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=3):
+        for cell in row:
+            cell.border = thin_border
 
     wb.save(EXPORT_PATH)
     wb.close()

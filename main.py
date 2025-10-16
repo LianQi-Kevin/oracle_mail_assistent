@@ -60,6 +60,8 @@ def clean_str(s: str) -> str:
             .replace("（", "(")
             .replace("）", ")")
             .replace("：", ":")
+            .replace("’", "'")
+            .replace("‘", "'")
             .strip())
 
 

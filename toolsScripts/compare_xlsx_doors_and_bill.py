@@ -1,4 +1,6 @@
 """交叉对比门窗表和工程量清单"""
+import os
+
 import openpyxl
 import re
 from dataclasses import dataclass, field
@@ -12,7 +14,7 @@ BILL_SHEET = r"./工程量清单.xlsx"
 @dataclass
 class doorData:
     name: str
-    facing: str
+    facing: str = field(default="N/A")
     window: bool = field(default=False)
     num: int = field(default=0)
 
@@ -20,6 +22,8 @@ class doorData:
 def load_door_data() -> dict[str, doorData]:
     """加载门窗表数据"""
     door_data_: dict[str, doorData] = dict()
+
+    print(f"正在处理门窗表: {DOOR_SHEET}")
 
     wb = openpyxl.load_workbook(DOOR_SHEET, data_only=True, read_only=True)
 
@@ -35,43 +39,59 @@ def load_door_data() -> dict[str, doorData]:
                 door_data_[cleaned_key] = doorData(
                     name=cleaned_key, num=int(row[col_index]),
                     facing=row[facing_index] if "/" not in row[facing_index] else row[facing_index].split("/")[0].strip(), window=("观察窗" in row[facing_index]))
+
+    # 检查door_data_中的是否存在重复
+    duplicates = set([x for x in door_data_.keys() if list(door_data_.keys()).count(x) > 1])
+    if duplicates:
+        print(f"门窗表: {os.path.basename(DOOR_SHEET)}中存在重复项: {duplicates}")
+
     return door_data_
 
 
 def load_bill_data() -> dict[str, doorData]:
     """加载工程量清单数据"""
-    bill_data_: dict[str, doorData] = dict()
+    total_dict: dict[str, doorData] = dict()
 
-    wb = openpyxl.load_workbook(BILL_SHEET, data_only=True, read_only=True)
-    ws = wb.active
+    for bill_sheet in BILL_SHEET:
+        print(f"正在处理工程量清单: {bill_sheet}")
 
-    key_list = []
+        bill_data_: dict[str, doorData] = dict()
 
-    for row in ws.iter_rows(min_row=3, values_only=True):
-        target_line = 3
-        if row[23] is not None:
-            target_line = 23
-        if row[target_line] is not None and row[21] is not None and int(row[21]) > 0:
-            # 使用正则表达式提取cleaned_str中中文前的所有非中文字符
-            cleaned_key = clean_str(row[target_line]).split(":")[1].strip()
-            match = re.match(r'^([^\u4e00-\u9fa5]*)', cleaned_key)
-            cleaned_key = match.group(1).split(" ")[0] if match else ""
-            if cleaned_key.endswith("("):  # 清理紧贴括号的情况
-                cleaned_key = cleaned_key[:-1]
+        wb = openpyxl.load_workbook(bill_sheet, data_only=True, read_only=True)
+        ws = wb["地下建筑工程-门窗"]
 
-            key_list.append(cleaned_key)
+        key_list = []
 
-            # 构造doorData对象
-            bill_data_[cleaned_key] = doorData(
-                name=cleaned_key, num=int(row[21]),
-                facing=row[5], window=("观察窗" in row[target_line]))
+        for row in ws.iter_rows(min_row=6, values_only=True):
+            if row[3] is not None and row[6] is not None and int(row[6]) > 0:
+                # 使用正则表达式提取cleaned_str中中文前的所有非中文字符
+                cleaned_key = clean_str(row[3]).split(":")[1].strip()
+                match = re.match(r'^([^\u4e00-\u9fa5]*)', cleaned_key)
+                cleaned_key = match.group(1).split(" ")[0] if match else ""
+                if cleaned_key.endswith("("):  # 清理紧贴括号的情况
+                    cleaned_key = cleaned_key[:-1]
 
-    # 检查key_list中的是否存在重复
-    duplicates = set([x for x in key_list if key_list.count(x) > 1])
-    if duplicates:
-        print(f"工程量清单中存在重复项: {duplicates}")
+                key_list.append(cleaned_key)
 
-    return bill_data_
+                # 构造doorData对象
+                bill_data_[cleaned_key] = doorData(
+                    name=cleaned_key, num=int(row[6]),
+                    # facing=row[5] if row[5] and "/" not in row[5] else (row[5].split("/")[0].strip() if row[5] else None),
+                    window=("观察窗" in row[3]))
+
+        # 检查key_list中的是否存在重复
+        duplicates = set([x for x in key_list if key_list.count(x) > 1])
+        if duplicates:
+            print(f"工程量清单: {os.path.basename(bill_sheet)}中存在重复项: {duplicates}")
+
+        # 对比多个sheet的key是否有重复
+        overlap_keys = set(total_dict.keys()).intersection(set(bill_data_.keys()))
+        if overlap_keys:
+            print(f"工程量清单: {os.path.basename(bill_sheet)}与之前的sheet存在重复项: {overlap_keys}")
+
+        total_dict.update(bill_data_)
+
+    return total_dict
 
 
 if __name__ == '__main__':
