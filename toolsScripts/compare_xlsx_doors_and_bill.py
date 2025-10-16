@@ -48,55 +48,57 @@ def load_door_data() -> dict[str, doorData]:
     return door_data_
 
 
-def load_bill_data() -> dict[str, doorData]:
+def load_bill_data(bill_sheet: str) -> dict[str, doorData]:
     """加载工程量清单数据"""
-    total_dict: dict[str, doorData] = dict()
+    print(f"正在处理工程量清单: {bill_sheet}")
 
-    for bill_sheet in BILL_SHEET:
-        print(f"正在处理工程量清单: {bill_sheet}")
+    bill_data_: dict[str, doorData] = dict()
 
-        bill_data_: dict[str, doorData] = dict()
+    wb = openpyxl.load_workbook(bill_sheet, data_only=True, read_only=True)
+    ws = wb["地下建筑工程-门窗"]
 
-        wb = openpyxl.load_workbook(bill_sheet, data_only=True, read_only=True)
-        ws = wb["地下建筑工程-门窗"]
+    key_list = []
 
-        key_list = []
+    for row in ws.iter_rows(min_row=6, values_only=True):
+        if row[3] is not None and row[6] is not None and int(row[6]) > 0:
+            # 使用正则表达式提取cleaned_str中中文前的所有非中文字符
+            cleaned_key = clean_str(row[3]).split(":")[1].strip()
+            match = re.match(r'^([^\u4e00-\u9fa5]*)', cleaned_key)
+            cleaned_key = match.group(1).split(" ")[0] if match else ""
+            if cleaned_key.endswith("("):  # 清理紧贴括号的情况
+                cleaned_key = cleaned_key[:-1]
 
-        for row in ws.iter_rows(min_row=6, values_only=True):
-            if row[3] is not None and row[6] is not None and int(row[6]) > 0:
-                # 使用正则表达式提取cleaned_str中中文前的所有非中文字符
-                cleaned_key = clean_str(row[3]).split(":")[1].strip()
-                match = re.match(r'^([^\u4e00-\u9fa5]*)', cleaned_key)
-                cleaned_key = match.group(1).split(" ")[0] if match else ""
-                if cleaned_key.endswith("("):  # 清理紧贴括号的情况
-                    cleaned_key = cleaned_key[:-1]
+            key_list.append(cleaned_key)
 
-                key_list.append(cleaned_key)
+            # 构造doorData对象
+            bill_data_[cleaned_key] = doorData(
+                name=cleaned_key, num=int(row[6]),
+                # facing=row[5] if row[5] and "/" not in row[5] else (row[5].split("/")[0].strip() if row[5] else None),
+                window=("观察窗" in row[3]))
 
-                # 构造doorData对象
-                bill_data_[cleaned_key] = doorData(
-                    name=cleaned_key, num=int(row[6]),
-                    # facing=row[5] if row[5] and "/" not in row[5] else (row[5].split("/")[0].strip() if row[5] else None),
-                    window=("观察窗" in row[3]))
+    # 检查key_list中的是否存在重复
+    duplicates = set([x for x in key_list if key_list.count(x) > 1])
+    if duplicates:
+        print(f"工程量清单: {os.path.basename(bill_sheet)}中存在重复项: {duplicates}")
 
-        # 检查key_list中的是否存在重复
-        duplicates = set([x for x in key_list if key_list.count(x) > 1])
-        if duplicates:
-            print(f"工程量清单: {os.path.basename(bill_sheet)}中存在重复项: {duplicates}")
+    return bill_data_
 
-        # 对比多个sheet的key是否有重复
-        overlap_keys = set(total_dict.keys()).intersection(set(bill_data_.keys()))
-        if overlap_keys:
-            print(f"工程量清单: {os.path.basename(bill_sheet)}与之前的sheet存在重复项: {overlap_keys}")
 
-        total_dict.update(bill_data_)
-
-    return total_dict
+@dataclass
+class cleanDictItem:
+    # wb_path: str
+    idx: int
+    door_name: str
+    sheet_name: str
 
 
 if __name__ == '__main__':
     door_data = load_door_data()
-    bill_data = load_bill_data()
+
+    bill_data: dict[str, doorData] = dict()
+
+    for _bill_sheet in BILL_SHEET:
+        bill_data.update(load_bill_data(_bill_sheet))
 
     # 交叉对比两个dict
     all_keys = set(door_data.keys()).union(set(bill_data.keys()))
@@ -115,4 +117,28 @@ if __name__ == '__main__':
                   f"差异: {door_qty - bill_qty}")
         else:
             print(f"项目: {key} 数量一致: {door_qty}, 饰面: {door_entry.facing if door_entry else 'N/A'}, 观察窗: {'有' if door_entry and door_entry.window else '无'}")
-    print("对比完成")
+            # pass
+    print("数量交叉对比完成")
+
+    total_itemized_dict: dict[str, cleanDictItem] = dict()
+
+    for _bill_sheet in BILL_SHEET:
+        itemized_dict: dict[str, cleanDictItem] = dict()
+
+        wb = openpyxl.load_workbook(_bill_sheet, read_only=True, data_only=True)
+        ws_list = [clean_str(sheet.title).replace(" ", "") for sheet in wb.worksheets]
+        for idx, sheet in [(i, sheet) for i, sheet in enumerate(wb.worksheets) if not bool(re.search(r'[\u4e00-\u9fa5]', sheet.title))]:
+            cleaned_door_name = clean_str(sheet.cell(row=8, column=2).value).replace(" ", "")
+            itemized_dict[cleaned_door_name] = cleanDictItem(idx=idx, door_name=cleaned_door_name, sheet_name=sheet.title)
+
+        print(f"工程量清单: {os.path.basename(_bill_sheet)}中分项有: {list(itemized_dict.keys())}")
+
+        total_itemized_dict.update(itemized_dict)
+
+    # 对比total_itemized_dict.keys()和door_data.keys()
+    all_keys = set(total_itemized_dict.keys()).union(set(door_data.keys()))
+    for key in all_keys:
+        itemized_entry = total_itemized_dict.get(key)
+        door_entry = door_data.get(key)
+        if door_entry and not itemized_entry:
+            print(f"门窗表项目: {door_entry.name} 在工程量清单分项中未找到对应项")
