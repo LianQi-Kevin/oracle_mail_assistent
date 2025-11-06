@@ -1,3 +1,5 @@
+"""使用 API 列出已注册文件，并根据专业分类写入 Excel。"""
+
 import os
 import threading
 from datetime import datetime, timezone, timedelta
