@@ -1,3 +1,5 @@
+import os
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
@@ -12,10 +14,14 @@ from dataclasses import dataclass
 import openpyxl
 
 
+LOCK_1 = threading.Lock()
+
+
 @dataclass
 class DocumentInfo:
     title: str
     revision: str
+    discipline: str
     document_id: str
     document_number: str
     document_status: str    # "无效"则表示作废
@@ -55,7 +61,8 @@ def list_registered_documents(search_query: str) -> list[DocumentInfo]:
                 document_id=_doc.attrib["DocumentId"],
                 document_number=_doc.findtext('DocumentNumber'),
                 document_status=_doc.findtext('DocumentStatus'),
-                date_modified=parseDatetime(_doc.findtext('DateModified'))
+                date_modified=parseDatetime(_doc.findtext('DateModified')),
+                discipline=_doc.findtext('Discipline')
             ))
         return _export_list
 
@@ -86,6 +93,13 @@ def list_registered_documents(search_query: str) -> list[DocumentInfo]:
         _response.raise_for_status()
         return _response
 
+    def _thread_task(page_number: int):
+        global LOCK_1
+        print(f"Fetching page {page_number}...")
+        _response = _postprocess(_get_response(page_number=page_number).content)
+        with LOCK_1:
+            all_docs.extend(_response)
+
     response = _get_response()
 
     # support pagination
@@ -98,8 +112,8 @@ def list_registered_documents(search_query: str) -> list[DocumentInfo]:
         all_tasks = []
 
         for page_num in range(2, page_info.total_pages + 1):
-            response = _get_response(page_number=page_num)
-            all_docs.extend(_postprocess(response.content))
+            task = pool.submit(_thread_task, page_num)
+            all_tasks.append(task)
 
         # 等待所有任务完成
         wait(all_tasks, return_when=ALL_COMPLETED)
@@ -114,15 +128,31 @@ if __name__ == '__main__':
     requestToken()
     registered_doc_list = list_registered_documents(search_query="SDS")
     print(len(registered_doc_list))
-    # for doc in registered_doc_list:
-    #     print(f"{doc.document_id} | {doc.document_number} | {doc.title} | {doc.revision} | {doc.document_status} | {doc.date_modified.isoformat()}")
 
-    # wb = openpyxl.Workbook()
-    # ws = wb.active
-    # ws.title = "C2-4"
-    # ws.append(["idx", "Title", "Revision", "Document Number"])
-    # for idx, doc_info in enumerate(registered_doc_list):
-    #     ws.append([idx + 1, doc_info.title, doc_info.revision, doc_info.document_number])
-    #
-    # wb.save("registered_C2-4_documents.xlsx")
-    # wb.close()
+    # 根据"discipline"字段进行聚类
+    clustered_docs: dict[str, list[DocumentInfo]] = {}
+    for doc in registered_doc_list:
+        if doc.discipline not in clustered_docs:
+            clustered_docs[doc.discipline] = []
+        clustered_docs[doc.discipline].append(doc)
+
+    # 分类写入sheet
+    wb = openpyxl.Workbook()
+    for discipline, docs in clustered_docs.items():
+        ws = wb.create_sheet(title=discipline[:30])  # sheet 名称不能超过 31 字符
+        ws.append(["标题", "版本", "专业", "图号", "文件状态", "修改日期"])
+        for doc in docs:
+            ws.append([
+                doc.title,
+                doc.revision,
+                doc.discipline,
+                doc.document_number,
+                doc.document_status,
+                doc.date_modified.isoformat()
+            ])
+
+    # 删除默认创建的sheet
+    wb.remove(wb["Sheet"])
+
+    wb.save("registered_documents.xlsx")
+    wb.close()
