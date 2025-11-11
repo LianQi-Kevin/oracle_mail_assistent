@@ -29,14 +29,17 @@ def load_door_data() -> dict[str, doorData]:
 
     wb = openpyxl.load_workbook(DOOR_SHEET, data_only=True, read_only=True)
 
-    ws_list = [("地下室", 7, 9), ("人防出入口", 4, 6)]
-    # ws_list = [("1#楼地上", 15, 17)]
+    # ws_list = [("1#2#办公楼地下部分门窗表", 8, 10), ("1#2#人防主要出入口门窗表", 5, 7)]
+    # ws_list = [("1#办公楼地上部分门窗表", 17, 19)]
+    ws_list = [("2#办公楼地上部分门窗表", 17, 19)]
 
     for sheet_name, col_index, facing_index in ws_list:
         ws = wb[sheet_name]
         for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[1] is not None and row[col_index] is not None and int(row[col_index]) > 0:
-                cleaned_key = clean_str(row[1])
+            if (row[2] is not None and row[col_index] is not None and int(row[col_index]) > 0
+                    and "w" not in str(row[2]).lower() and "sh" not in str(row[2]).lower()
+                    and "XCA" not in str(row[2]).upper()) and "#" not in str(row[2]):
+                cleaned_key = clean_str(row[2])
 
                 # 构造doorData对象
                 door_data_[cleaned_key] = doorData(
@@ -60,14 +63,14 @@ def load_bill_data(bill_sheet: str) -> dict[str, doorData]:
     bill_data_: dict[str, doorData] = dict()
 
     wb = openpyxl.load_workbook(bill_sheet, data_only=True, read_only=True)
-    ws = wb["地下建筑工程-门窗"]
-    # ws = [sheet for sheet in wb.worksheets if "南塔建筑工程" in sheet.title][0]
+    ws = [sheet for sheet in wb.worksheets if "建筑工程" in sheet.title][0]
 
     key_list = []
 
     for row in ws.iter_rows(min_row=6, values_only=True):
         if row[3] is not None and row[6] is not None and int(row[6]) > 0:
             cleaned_key = clean_bill_str(row[3], allowed_chinese=["防盗"])
+            print(re.sub(r"\s+", " ", f"原始名称: {row[3]} -> 清洗后代号: {cleaned_key}"))
             key_list.append(cleaned_key)
 
             # 构造doorData对象
@@ -90,7 +93,7 @@ def clean_bill_str(text: str, allowed_chinese: list[str]) -> str:
     """从给定字符串中提取清洗后的门型代号部分。"""
     if text is None:
         return ""
-    text = str(text)
+    text = str(text).replace("（", "(").replace("）", ")").replace("‘", "'").replace("’", "'").strip()
     # 定位并截取“名称：”之后的部分
     if "名称：" not in text:
         return ""
@@ -150,7 +153,7 @@ def clean_bill_str(text: str, allowed_chinese: list[str]) -> str:
                 i += 1
                 continue
             # 保留括号外的英文字母、数字、“.”、“-”、“_”等常见符号
-            if re.match(r'[0-9A-Za-z.\-_]', ch):
+            if re.match(r"[0-9A-Za-z.\-_']", ch):
                 output_chars.append(ch)
                 i += 1
                 continue
@@ -188,9 +191,15 @@ if __name__ == '__main__':
     bill_data: dict[str, doorData] = dict()
 
     for _bill_sheet in BILL_SHEET:
-        bill_data.update(load_bill_data(_bill_sheet))
+        data = load_bill_data(_bill_sheet)
+
+        for key, value in data.items():
+            print(f"项目: {key} 数量: {value.num}, 饰面: {value.facing}, 观察窗: {'有' if value.window else '无'}")
+
+        bill_data.update(data)
 
     # 交叉对比两个dict
+    print("-------------------开始数量交叉对比-------------------")
     all_keys = set(door_data.keys()).union(set(bill_data.keys()))
     compare_result: dict[str, compareItem] = dict()
     for key in all_keys:
